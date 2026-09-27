@@ -74,6 +74,11 @@ reading the CSV: the SDK holds the file exclusively on Windows. Frame intervals
 measure guest swap submissions, unlike an external presentation-FPS overlay.
 The optional capture does not change game timing or renderer settings.
 
+The [performance investigation](docs/performance.md) records baseline timings,
+the opt-in `-Experiment InvalidFetch` rendering comparison, profiling commands,
+and the acceptance criteria for the One on One path. Experimental options are
+not assumed to be fixes until the same scenes have been compared.
+
 The launcher opens the game without an additional console window and records
 logs under `analysis/vulkan-play-<timestamp>/`. Close the game window to stop.
 The PowerShell launcher waits without a timeout, then reports normal exit or a

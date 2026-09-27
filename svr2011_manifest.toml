@@ -40,3 +40,5 @@ includes = []
 0x82ACF9B8 = {}
 # Later in-match callback (Vulkan runtime 20260927-183832), referenced at 0x82035ED0.
 0x82600EB8 = {}
+# Post-match callback (runtime 20260927-184353), adjacent original virtual thunk.
+0x82600ED0 = {}

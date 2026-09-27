@@ -1,5 +1,8 @@
 # Launch the separate Vulkan-only build without a console window or test timeout.
-param([switch]$PerfCapture)
+param(
+    [switch]$PerfCapture,
+    [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'Baseline'
+)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $executable = "$projectRoot/out/build/win-amd64-relwithdebinfo-vulkan/svr2011.exe"
@@ -18,6 +21,13 @@ foreach ($argument in @('--gpu_plugin=xenos', '--vulkan_device=-1',
     $info.ArgumentList.Add($argument)
 }
 if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
+if ($Experiment -eq 'InvalidFetch') {
+    $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
+}
+[ordered]@{
+    executable = $executable; experiment = $Experiment; perf_capture = [bool]$PerfCapture
+    arguments = @($info.ArgumentList)
+} | ConvertTo-Json -Depth 4 | Set-Content "$run/launch.json"
 $process = [System.Diagnostics.Process]::Start($info)
 Write-Output "Vulkan game started (PID $($process.Id)). Logs: $run"
 Write-Output 'No timeout is set. Close the game window when you are finished.'
@@ -32,7 +42,7 @@ try {
     }
     $outcome = if ($process.ExitCode -eq 0) { 'exited' } else { 'crashed' }
     [ordered]@{
-        executable = $executable; process_id = $process.Id; renderer = 'Vulkan'
+        executable = $executable; process_id = $process.Id; renderer = 'Vulkan'; experiment = $Experiment
         elapsed_seconds = [math]::Round($timer.Elapsed.TotalSeconds, 2)
         exit_code = $process.ExitCode; outcome = $outcome
         fatal_guest_targets = $fatalTargets; logs = $run
