@@ -60,6 +60,9 @@
           <Label Content="_Internal resolution" Target="{Binding ElementName=Scale}" Margin="0,20,0,0"/>
           <ComboBox x:Name="Scale" AutomationProperties.Name="Internal resolution"><ComboBoxItem Content="1× · Native (recommended)" Tag="1"/><ComboBoxItem Content="2× · Experimental" Tag="2"/><ComboBoxItem Content="3× · Experimental" Tag="3"/></ComboBox>
           <TextBlock x:Name="ScaleHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0" Text="Changes rendering detail, independently of window size."/>
+          <Label Content="Display _synchronization" Target="{Binding ElementName=Presentation}" Margin="0,20,0,0"/>
+          <ComboBox x:Name="Presentation" AutomationProperties.Name="Display synchronization"><ComboBoxItem Content="Off · Current smooth setup" Tag="Immediate"/><ComboBoxItem Content="Adaptive presentation · Mailbox (test)" Tag="Mailbox"/><ComboBoxItem Content="Monitor VSync · FIFO (test)" Tag="Fifo"/></ComboBox>
+          <TextBlock x:Name="PresentationHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>
           <Label Content="_Controller support" Target="{Binding ElementName=Controller}" Margin="0,20,0,0"/>
           <ComboBox x:Name="Controller" AutomationProperties.Name="Controller support"><ComboBoxItem Content="Automatic · Standard controller support" Tag="Auto"/><ComboBoxItem Content="Xbox compatibility · XInput" Tag="Xbox"/></ComboBox>
           <TextBlock Text="Connect your controller before starting. Player slots are assigned automatically." Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>

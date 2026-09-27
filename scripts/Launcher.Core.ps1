@@ -1,6 +1,6 @@
 # Shared, UI-independent settings and argument validation.
 function New-SvrSettings {
-    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false }
+    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Immediate' }
 }
 
 function Test-SvrSettings($Settings) {
@@ -11,11 +11,14 @@ function Test-SvrSettings($Settings) {
     if ($Settings.scale -notin @(1, 2, 3)) { throw 'Invalid resolution scale.' }
     if ($Settings.controller -notin @('Auto', 'Xbox')) { throw 'Invalid controller mode.' }
     if ($Settings.perfCapture -isnot [bool]) { throw 'Invalid performance capture setting.' }
+    if ($Settings.presentation -notin @('Immediate', 'Mailbox', 'Fifo')) { throw 'Invalid display synchronization mode.' }
 }
 
 function Read-SvrSettings([string]$Path) {
     if (!(Test-Path -LiteralPath $Path)) { return New-SvrSettings }
     $settings = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    # Older version-one files predate display synchronization controls.
+    if (!$settings.Contains('presentation')) { $settings.presentation = 'Immediate' }
     Test-SvrSettings $settings
     return $settings
 }
@@ -44,4 +47,7 @@ function Get-SvrDisplayArguments($Settings) {
     # Specify the alias too so a previously persisted runtime value cannot override it.
     "--resolution_scale=$($Settings.scale)"
     '--input_backend=' + $(if ($Settings.controller -eq 'Xbox') { 'xinput' } else { 'sdl' })
+    '--vulkan_allow_present_mode_immediate=' + ($Settings.presentation -eq 'Immediate').ToString().ToLowerInvariant()
+    '--vulkan_allow_present_mode_mailbox=' + ($Settings.presentation -ne 'Fifo').ToString().ToLowerInvariant()
+    '--vulkan_allow_present_mode_fifo_relaxed=' + ($Settings.presentation -eq 'Immediate').ToString().ToLowerInvariant()
 }

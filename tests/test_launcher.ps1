@@ -20,7 +20,24 @@ try {
         '--draw_resolution_scale_x=3','--draw_resolution_scale_y=3','--resolution_scale=3','--input_backend=xinput')) {
         Assert ($arguments -contains $argument) "Missing argument: $argument"
     }
-    foreach ($field in @('scale','windowSize','controller','displayMode','perfCapture','version')) {
+    foreach ($mode in @('Immediate','Mailbox','Fifo')) {
+        $value = New-SvrSettings
+        $value.presentation = $mode
+        $argsForMode = @(Get-SvrDisplayArguments $value)
+        Assert ($argsForMode -notcontains '--vsync=false') 'Presentation setting changed guest clock.'
+        $immediate = ($mode -eq 'Immediate').ToString().ToLowerInvariant()
+        Assert ($argsForMode -contains "--vulkan_allow_present_mode_immediate=$immediate") 'Wrong immediate mode.'
+        if ($mode -eq 'Fifo') {
+            Assert ($argsForMode -contains '--vulkan_allow_present_mode_mailbox=false') 'FIFO did not disable mailbox.'
+            Assert ($argsForMode -contains '--vulkan_allow_present_mode_fifo_relaxed=false') 'FIFO did not disable relaxed FIFO.'
+        }
+    }
+    $old = New-SvrSettings
+    $old.Remove('presentation')
+    $old | ConvertTo-Json | Set-Content -LiteralPath $path
+    Assert ((Read-SvrSettings $path).presentation -eq 'Immediate') 'Old settings did not migrate safely.'
+    Save-SvrSettings $path $loaded
+    foreach ($field in @('scale','windowSize','controller','displayMode','perfCapture','version','presentation')) {
         $invalid = New-SvrSettings
         $invalid[$field] = 'invalid'
         $rejected = $false

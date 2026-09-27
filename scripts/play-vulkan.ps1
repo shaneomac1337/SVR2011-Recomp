@@ -2,6 +2,7 @@
 param(
     [switch]$PerfCapture,
     [switch]$Profile,
+    [switch]$SynchronousShaders,
     [string]$SettingsPath,
     [string]$RunDirectory,
     [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch'
@@ -40,12 +41,14 @@ if ($settings) {
 }
 if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
 if ($Profile) { $info.ArgumentList.Add('--svr_profile=true') }
+if ($SynchronousShaders) { $info.ArgumentList.Add('--async_shader_compilation=false') }
 if ($Experiment -eq 'InvalidFetch') {
     $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
 }
 [ordered]@{
     executable = $executable; experiment = $Experiment; perf_capture = [bool]$PerfCapture; profile = [bool]$Profile
     settings = $settings
+    synchronous_shaders = [bool]$SynchronousShaders
     arguments = @($info.ArgumentList)
 } | ConvertTo-Json -Depth 4 | Set-Content "$run/launch.json"
 $process = [System.Diagnostics.Process]::Start($info)

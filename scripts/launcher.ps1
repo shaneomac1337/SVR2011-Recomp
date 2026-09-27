@@ -16,7 +16,7 @@ try { $script:settings = Read-SvrSettings $SettingsPath } catch {
 $reader = [System.Xml.XmlNodeReader]::new([xml](Get-Content "$projectRoot/launcher/Launcher.xaml" -Raw))
 try { $window = [Windows.Markup.XamlReader]::Load($reader) } finally { $reader.Close() }
 $ui = @{}
-foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Controller','PerfCapture','Save','Reset','Play','Logs','Status','SettingsPanel')) {
+foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','Controller','PerfCapture','Save','Reset','Play','Logs','Status','SettingsPanel')) {
     $ui[$name] = $window.FindName($name)
 }
 function Set-Status([string]$Message, [bool]$ErrorState = $false) {
@@ -31,6 +31,11 @@ function Update-DisplayHelp {
     $ui.ScaleHelp.Text = if ([int]$ui.Scale.SelectedItem.Tag -gt 1) {
         'Higher detail uses more GPU resources. Check entrances and finishers; return to native if rendering breaks.'
     } else { 'Native rendering is the validated setting. Window size does not change rendering detail.' }
+    $ui.PresentationHelp.Text = switch ($ui.Presentation.SelectedItem.Tag) {
+        'Mailbox' { 'Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable. Needs a gameplay check.' }
+        'Fifo' { 'Limits display output to the monitor refresh rate, not necessarily 60 Hz. May add latency; check match smoothness.' }
+        default { 'Keeps the proven presentation mode. Overlay FPS may exceed the actual game update rate.' }
+    }
 }
 function Show-Settings($Value) {
     $script:loading = $true
@@ -38,6 +43,7 @@ function Show-Settings($Value) {
     Select-Value $ui.WindowSize $Value.windowSize
     Select-Value $ui.Scale $Value.scale
     Select-Value $ui.Controller $Value.controller
+    Select-Value $ui.Presentation $Value.presentation
     $ui.PerfCapture.IsChecked = $Value.perfCapture
     Update-DisplayHelp
     $script:loading = $false
@@ -48,6 +54,7 @@ function Read-Controls {
     $value.windowSize = [string]$ui.WindowSize.SelectedItem.Tag
     $value.scale = [int]$ui.Scale.SelectedItem.Tag
     $value.controller = [string]$ui.Controller.SelectedItem.Tag
+    $value.presentation = [string]$ui.Presentation.SelectedItem.Tag
     $value.perfCapture = [bool]$ui.PerfCapture.IsChecked
     return $value
 }
@@ -58,7 +65,7 @@ function Set-Dirty {
     }
 }
 Show-Settings $script:settings
-foreach ($name in @('DisplayMode','WindowSize','Scale','Controller')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
+foreach ($name in @('DisplayMode','WindowSize','Scale','Controller','Presentation')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
 $ui.PerfCapture.Add_Click({ Set-Dirty })
 $ui.Save.Add_Click({
     try { Save-SvrSettings $SettingsPath (Read-Controls); Set-Status 'Settings saved. They apply the next time you play.' }

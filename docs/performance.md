@@ -159,6 +159,37 @@ need `-Profile`. This is a user-observed limiter interaction, not proof of the
 exact interception/presentation mechanism. Repeated match and cinematic testing
 remains necessary before calling the port production-ready.
 
+## Display synchronization and character-select flicker
+
+The user reports extremely smooth One on One gameplay through the launcher,
+but character select still has a brief black flicker. The latest native-scale
+launcher session `analysis/vulkan-play-20260927-195330-749/` exited normally after
+245.34 seconds with no fatal guest targets.
+
+The launcher now exposes existing Vulkan present-mode controls: Immediate
+(default, unchanged), Mailbox (FIFO fallback) and FIFO (monitor refresh rate).
+They do not change guest vblank timing. Both synchronized alternatives require
+gameplay comparison before promotion. A numeric host frame cap remains future
+work: it must avoid blocking guest frame production as the external limiter did.
+
+Flicker investigation, ranked hypotheses:
+
+1. Async shader placeholders or incomplete frames on character transitions.
+   Compare identical transitions with async compilation off; expect the flash
+   to disappear if this is responsible, potentially replaced by loading pauses.
+2. A presentation/swap-source transition briefly displays a blank image.
+   If sync shaders does not change the flash, capture the affected transition
+   and inspect swaps and source textures before changing presentation behavior.
+3. A guest transition or resource update intentionally or incorrectly emits
+   black. Compare the same transition on the emulator; similarity alone does
+   not establish intended behavior.
+
+`analysis/vulkan-play-20260927-200133-953/` is the first controlled synchronous
+shader test, using saved native settings and frame capture. The temporary
+`-SynchronousShaders` script switch adds only `--async_shader_compilation=false`;
+it is not a persistent launcher default. User confirmation of screen scope,
+trigger, flicker outcome and smoothness is pending. Do not label this fixed.
+
 ## Acceptance before calling this path ready
 
 - Repeated full One on One matches complete and return to the menu without fatal
