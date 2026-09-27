@@ -1,0 +1,131 @@
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..710e38f 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -55,6 +55,11 @@ REXCVAR_DEFINE_INT32(
+     .range(-1, 32)
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++REXCVAR_DEFINE_BOOL(vulkan_async_skip_placeholder_pipelines, false, "GPU/Vulkan",
++                    "Async shader compilation: skip draws with pending pipelines instead of "
++                    "first compiling a placeholder pipeline on the GPU thread")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
+ REXCVAR_DEFINE_BOOL(vulkan_tessellation_wireframe, false, "GPU/Vulkan",
+                     "Render tessellation as wireframe")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+@@ -1111,8 +1116,15 @@ bool VulkanPipelineCache::ConfigurePipeline(
+     }
+   }
+ 
++  // Draws are skipped while a pipeline is pending (and such frames are not presented), so the
++  // placeholder pipeline is never bound. Without it, nothing is compiled on this thread, and
++  // vertex-only pipelines can be deferred too unless they memexport, since skipping those draws
++  // would drop guest-visible memory writes.
++  const bool skip_placeholder = REXCVAR_GET(vulkan_async_skip_placeholder_pipelines);
+   bool use_async = REXCVAR_GET(async_shader_compilation) && !creation_threads_.empty() &&
+-                   pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE;
++                   (skip_placeholder
++                        ? (pixel_shader || !vertex_shader->shader().memexport_eM_written())
++                        : (pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE));
+   uint8_t async_priority = pipeline_util::kPriorityLowest;
+   if (use_async) {
+     uint32_t bound_rts =
+@@ -1127,6 +1139,15 @@ bool VulkanPipelineCache::ConfigurePipeline(
+ 
+   auto it = pipelines_.find(description);
+   if (it != pipelines_.end()) {
++    if (it->second.is_placeholder.load(std::memory_order_acquire)) {
++      last_pipeline_ = &*it;
++      pipeline_out = VK_NULL_HANDLE;
++      pipeline_layout_out = nullptr;
++      if (pipeline_handle_out) {
++        *pipeline_handle_out = &it->second;
++      }
++      return true;
++    }
+     VkPipeline found_pipeline = it->second.pipeline.load(std::memory_order_acquire);
+     if (found_pipeline == VK_NULL_HANDLE) {
+       PipelineCreationArguments creation_arguments;
+@@ -1159,21 +1180,28 @@ bool VulkanPipelineCache::ConfigurePipeline(
+   bool queued_async_creation = false;
+   if (use_async) {
+     creation_arguments_real.priority = async_priority;
+-    PipelineCreationArguments creation_arguments_placeholder;
+-    if (TryGetPipelineCreationArgumentsForDescription(description, &pipeline,
+-                                                      creation_arguments_placeholder, true)) {
+-      pipeline.second.is_placeholder.store(true, std::memory_order_release);
+-      if (EnsurePipelineCreated(creation_arguments_placeholder, placeholder_pixel_shader_)) {
+-        {
+-          std::lock_guard<std::mutex> lock(creation_request_lock_);
+-          creation_queue_.push(creation_arguments_real);
++    bool pending_ready = skip_placeholder;
++    if (!skip_placeholder) {
++      PipelineCreationArguments creation_arguments_placeholder;
++      if (TryGetPipelineCreationArgumentsForDescription(description, &pipeline,
++                                                        creation_arguments_placeholder, true)) {
++        pipeline.second.is_placeholder.store(true, std::memory_order_release);
++        pending_ready =
++            EnsurePipelineCreated(creation_arguments_placeholder, placeholder_pixel_shader_);
++        if (!pending_ready) {
++          pipeline.second.is_placeholder.store(false, std::memory_order_release);
+         }
+-        creation_request_cond_.notify_one();
+-        queued_async_creation = true;
+-      } else {
+-        pipeline.second.is_placeholder.store(false, std::memory_order_release);
+       }
+     }
++    if (pending_ready) {
++      pipeline.second.is_placeholder.store(true, std::memory_order_release);
++      {
++        std::lock_guard<std::mutex> lock(creation_request_lock_);
++        creation_queue_.push(creation_arguments_real);
++      }
++      creation_request_cond_.notify_one();
++      queued_async_creation = true;
++    }
+   }
+ 
+   if (!queued_async_creation && !EnsurePipelineCreated(creation_arguments_real)) {
+@@ -1202,7 +1230,8 @@ bool VulkanPipelineCache::ConfigurePipeline(
+   if (pipeline_handle_out) {
+     *pipeline_handle_out = &pipeline.second;
+   }
+-  return pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr;
++  return queued_async_creation ||
++         (pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr);
+ }
+ 
+ bool VulkanPipelineCache::IsCreatingPipelines() const {
+@@ -1224,11 +1253,13 @@ void VulkanPipelineCache::GetPipelineAndLayoutByHandle(
+     }
+     return;
+   }
++  // Read the pending flag first: once it is observed clear, the pipeline store is visible.
+   const auto* pipeline = reinterpret_cast<const Pipeline*>(handle);
++  bool is_placeholder = pipeline->is_placeholder.load(std::memory_order_acquire);
+   pipeline_out = pipeline->pipeline.load(std::memory_order_acquire);
+   pipeline_layout_out = pipeline->pipeline_layout.load(std::memory_order_acquire);
+   if (is_placeholder_out) {
+-    *is_placeholder_out = pipeline->is_placeholder.load(std::memory_order_acquire);
++    *is_placeholder_out = is_placeholder;
+   }
+ }
+ 
+@@ -3550,6 +3581,7 @@ void VulkanPipelineCache::CreationThread(size_t thread_index) {
+       } else {
+         creation_arguments.pipeline->second.pipeline.store(VK_NULL_HANDLE,
+                                                            std::memory_order_release);
++        creation_arguments.pipeline->second.is_placeholder.store(false, std::memory_order_release);
+       }
+     }
+ 
+@@ -3583,6 +3615,7 @@ void VulkanPipelineCache::CreateQueuedPipelinesOnProcessorThread() {
+       } else {
+         creation_arguments.pipeline->second.pipeline.store(VK_NULL_HANDLE,
+                                                            std::memory_order_release);
++        creation_arguments.pipeline->second.is_placeholder.store(false, std::memory_order_release);
+       }
+     }
+   }

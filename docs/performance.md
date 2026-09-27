@@ -452,3 +452,40 @@ Regression check: launch with `scripts/play-vulkan.ps1 -KeyboardInput` (enables
 receives a focus change), reach One on One character select, then run
 `scripts/check-charselect-flicker.ps1`. It briefly takes focus, alternates D/A,
 and exits 1 if any scene-dark run of three or more frames appears.
+
+## Rare single hitches after the FSI switch, 2026-09-27 23:10
+
+The user noticed a very brief freeze during a match in launcher run
+`vulkan-play-20260927-230254-917` (FSI, no perf capture). The log shows new
+graphics pipelines created mid-match (23:04:06–07, 23:04:13, 23:05:04) and the
+one-time warning "Skipping Vulkan frame presentation due to async placeholder draw
+usage" at 23:04:06.372. FSI keeps its own pipeline storage
+(`cache/vulkan/shaders/shareable/5451085D.fsi.vk.xpso`, 9.5 KB vs 16.9 KB for FBO),
+so moves and effects already warmed under FBO compile once more under FSI. Each
+distinct pipeline costs this once, then loads from storage at boot.
+
+Cost measured in `vulkan-play-20260927-224923-769` (FSI, perf capture): gameplay
+262–308 s had max 31.6 ms, but the entrance/match-start burst (225–258 s) had 29
+guest frame intervals of 49–1018 ms. The guest itself is blocked, not only the
+present: for every new pipeline the GPU thread compiles a placeholder pipeline
+synchronously (40–70 ms apart in the log) before queueing the real one. That
+placeholder is never bound, because draws are skipped while a pipeline is a
+placeholder. Pipelines without a guest pixel shader never take the async path at
+all; under FSI their generated fragment shader carries the EDRAM depth logic.
+The `pipeline_cache_misses` perf column is never populated.
+
+Experimental change `patches/rexglue-async-pipelines.patch`, off by default via
+`--vulkan_async_skip_placeholder_pipelines` (`play-vulkan.ps1
+-SkipPlaceholderPipelines`): pending pipelines skip their draws without a
+placeholder compile, and vertex-only pipelines are deferred too unless their
+vertex shader memexports. A failed background creation now clears the pending
+state instead of skipping forever. The object compiles and the runtime deploys;
+it has not been run. Expected effect: long guest stalls on first-seen pipelines
+drop to shader translation time; presentation is still held while real pipelines
+compile, which background threads do in parallel.
+
+Validation still to do before promoting it: an FSI run with perf capture and
+cold pipelines, with and without the switch, compared over the entrance/match-start
+window (count of >50 ms intervals, max), plus a visual check that shadows and
+effects appear normally once compiled. Without the switch, hitches should still
+fade as the FSI storage fills.
