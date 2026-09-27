@@ -190,6 +190,26 @@ shader test, using saved native settings and frame capture. The temporary
 it is not a persistent launcher default. User confirmation of screen scope,
 trigger, flicker outcome and smoothness is pending. Do not label this fixed.
 
+## Character-select visual capture
+
+The user reports the flash persists. Their latest normal launcher run used
+async shaders, so this report alone does not confirm the earlier synchronous
+comparison outcome. Do not mark that hypothesis ruled out yet.
+
+`scripts/capture-transition.ps1 -WaitForF8 -Seconds 12` arms a window-only capture.
+Press F8 immediately before entering character select, then repeat the affected
+selection. It saves timestamped JPEG frames and brightness summaries under
+`analysis/transition-*`, never stopping the game. Capture samples are best effort:
+the initial title-screen check captured 79 frames in two seconds (about 39 FPS),
+so a one-frame flash may require repeated transitions. Dark title screens also
+score dark; brightness is a locator for visual inspection, not a bug verdict.
+Recording overhead makes these runs unsuitable for performance conclusions.
+
+The title-screen capture `transition-20260927-201308-904` verified the recorder.
+The 12-second F8-triggered capture is armed for game run
+`vulkan-play-20260927-201213-658`; the character-select recording is pending.
+No rendering workaround has been promoted.
+
 ## Acceptance before calling this path ready
 
 - Repeated full One on One matches complete and return to the menu without fatal
