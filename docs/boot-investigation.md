@@ -195,8 +195,12 @@ ending in `bctr`, adjacent to the previously registered `0x82ACF9A0`. It was als
 added as a discovery seed. The next run, `analysis/vulkan-play-20260927-183832/`,
 remained running beyond both prior crash points. A frame captured around 18:40:05
 (`analysis/vulkan-match-retest.png`) shows Orton and Mysterio fighting in the
-selected match with a crowd and wrestler HUD. User confirmation of controls and
-longer-match stability remains pending; the game was left open for testing.
+selected match with a crowd and wrestler HUD. That run then crashed at 18:40:12
+on missing callback `0x82600EB8`; it was not terminated by the agent. The user
+confirmed the match was working before exit and that background-fight performance
+felt better. The third target is another six-instruction virtual dispatch thunk,
+referenced at `0x82035ED0`; it has been seeded and its generated implementation
+checked against the original instructions. Runtime validation remains pending.
 
 Added optional `-PerfCapture` to both launchers. The app's `OnPostSetup` opens
 the SDK's existing `perf_log_csv` output before guest execution; v0.10.0 declares
@@ -216,3 +220,15 @@ between the ~32 FPS windows and perceived slow motion remains unverified.
 Shader compilation and invalid-texture warnings are present, but causality
 has not been demonstrated. No timing, vsync, or invalid-texture bypass settings
 were changed.
+
+The later CSV contains 4,500 rows over 98.54 seconds: middle ten-second windows
+averaged roughly 39.7–42.6 guest FPS and the final partial window averaged 59.9.
+This is consistent with the user's improvement report, but scene and cache state
+were not controlled, so it does not establish a performance fix.
+
+User preference: do not stop interactive tests. Use only the no-timeout
+`play-vulkan.ps1` for user sessions; do not apply the bounded smoke harness to a
+session they are playing. The launcher now waits for process exit and records
+`result.json` plus normal-exit/crash output without killing the process. After
+the third callback rebuild, leave the next launch to the user. All three match
+exits above have fatal guest targets in their logs, rather than agent timeouts.

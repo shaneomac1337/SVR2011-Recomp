@@ -76,6 +76,10 @@ The optional capture does not change game timing or renderer settings.
 
 The launcher opens the game without an additional console window and records
 logs under `analysis/vulkan-play-<timestamp>/`. Close the game window to stop.
+The PowerShell launcher waits without a timeout, then reports normal exit or a
+crash and saves `result.json`. It never terminates the game. Use this launcher for
+interactive testing; `smoke.ps1` intentionally has a deadline and is unsuitable
+for an open-ended play session.
 Vulkan uses separate `cache/vulkan/` and `userdata/vulkan/` directories, so its
 first launch has fresh settings and saves. It selects a Vulkan GPU automatically;
 check the runtime log for the selected adapter. There is no D3D12 fallback in
