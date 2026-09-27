@@ -1,0 +1,16 @@
+# Original game data and locally generated translations stay local.
+*.iso
+*.xex
+*.xex.delta
+/assets/
+/generated/*
+!/generated/rexglue.cmake
+/analysis/
+/.tools/
+/out/
+/build/
+__pycache__/
+*.pyc
+/logs/
+/cache/
+/userdata/
