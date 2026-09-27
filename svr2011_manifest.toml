@@ -24,3 +24,11 @@ includes = []
 0x826E4D40 = {}
 0x82BBA778 = {}
 0x82C2A020 = {}
+# Indirect target in both the user's WWE-logo crash and the matching startup repro.
+0x82CFD9C8 = {}
+# Next indirect target reached through the now-registered logo transition thunk.
+0x82CF7068 = {}
+# Next missing target observed after the full title screen was rendered.
+0x82ACF950 = {}
+# Sibling callback reached during the following background-gameplay probe.
+0x82ACF9A0 = {}

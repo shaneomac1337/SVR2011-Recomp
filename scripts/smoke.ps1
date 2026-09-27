@@ -1,4 +1,9 @@
-param([ValidateRange(1, 300)][int]$Seconds = 20)
+param(
+    [ValidateRange(1, 300)][int]$Seconds = 20,
+    [ValidateSet('info', 'debug', 'trace')][string]$LogLevel = 'info',
+    [ValidateSet('Warp', 'Hardware')][string]$Adapter = 'Warp',
+    [switch]$GpuDiagnostics
+)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $executable = "$projectRoot/out/build/win-amd64-relwithdebinfo/svr2011.exe"
@@ -13,12 +18,15 @@ $info.RedirectStandardOutput = $true
 $info.RedirectStandardError = $true
 foreach ($argument in @('--headless', '--gpu_plugin=xenos', "--game_data_root=$projectRoot/assets",
     "--user_data_root=$projectRoot/userdata", "--cache_root=$projectRoot/cache",
-    "--log_file=$run/runtime.log", '--log_level=debug', '--log_flush_interval=1')) {
+    "--log_file=$run/runtime.log", "--log_level=$LogLevel", '--log_flush_interval=1')) {
     $info.ArgumentList.Add($argument)
 }
+$info.ArgumentList.Add($(if ($Adapter -eq 'Warp') { '--d3d12_adapter=-2' } else { '--d3d12_adapter=-1' }))
+if ($GpuDiagnostics) { $info.ArgumentList.Add('--d3d12_debug') }
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $info
 $started = $false
+$timer = [System.Diagnostics.Stopwatch]::StartNew()
 try {
     $started = $process.Start()
     $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -27,9 +35,20 @@ try {
     if ($timedOut) { $process.Kill($true); $process.WaitForExit() }
     $stdout.GetAwaiter().GetResult() | Set-Content "$run/stdout.txt"
     $stderr.GetAwaiter().GetResult() | Set-Content "$run/stderr.txt"
-    $result = [ordered]@{ executable = $executable; seconds = $Seconds; timed_out = $timedOut; exit_code = $process.ExitCode; logs = $run }
+    $fatalTargets = @()
+    if (Test-Path "$run/runtime.log") {
+        $fatalTargets = @(Select-String -Path "$run/runtime.log" -Pattern '\[FATAL\].*guest address (0x[0-9A-Fa-f]+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value })
+    }
+    $outcome = if ($timedOut) { 'alive_at_deadline' } elseif ($process.ExitCode -eq 0) { 'exited' } else { 'crashed' }
+    $result = [ordered]@{
+        executable = $executable; seconds = $Seconds; elapsed_seconds = [math]::Round($timer.Elapsed.TotalSeconds, 2)
+        timed_out = $timedOut; exit_code = $process.ExitCode; outcome = $outcome
+        fatal_guest_targets = $fatalTargets; adapter = $Adapter; logs = $run
+    }
     $result | ConvertTo-Json | Set-Content "$run/result.json"
     $result | ConvertTo-Json
+    if ($outcome -eq 'crashed') { throw "Game crashed. Diagnostics saved in $run" }
 } finally {
     if ($started -and !$process.HasExited) { $process.Kill($true); $process.WaitForExit() }
     $process.Dispose()

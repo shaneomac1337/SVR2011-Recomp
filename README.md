@@ -1,8 +1,10 @@
 # SVR 2011 recompilation investigation
 
-Experimental Xbox 360 → Windows recompilation using ReXGlue. **Not yet playable.**
-The native executable builds and survives a 20-second startup probe after fixing
-observed missing function entries. Menu rendering and gameplay remain unverified.
+Experimental Xbox 360 → Windows recompilation using ReXGlue. **Gameplay is not yet reliable.**
+The title screen renders and the user confirmed menu/gamepad interaction. Background
+gameplay exposed further missing callbacks, followed by a D3D12 device hang on an
+AMD RX 7900 XT. Hardware-rendered testing is paused; the diagnostic harness now
+defaults to WARP software rendering.
 See [the boot investigation](docs/boot-investigation.md) for measured results.
 
 This project uses locally supplied game data. Original disc images, extracted
@@ -21,7 +23,7 @@ python scripts/inspect_disc.py 'WWE SmackDown vs. Raw 2011 (USA, Europe).iso' --
 ./scripts/build.ps1 -Action Codegen
 ./scripts/build.ps1 -Action Configure
 ./scripts/build.ps1 -Action Build
-./scripts/smoke.ps1 -Seconds 20
+./scripts/smoke.ps1 -Seconds 60 -GpuDiagnostics
 ```
 
 `bootstrap.ps1` needs 7-Zip to unpack LLVM (default `D:/tools/7-Zip/7z.exe`;
@@ -33,6 +35,15 @@ The build accepts only the recorded XEX fingerprint. Supporting another revision
 requires fresh analysis rather than reusing addresses blindly.
 
 `smoke.ps1` records its exit status in a timestamped directory under `analysis/`.
+It defaults to `-Adapter Warp` (`--d3d12_adapter=-2`), which uses Microsoft's CPU
+renderer. This is a diagnostic fallback, not a hardware-renderer fix. The earlier
+software test also produced poor performance and a user-reported black screen;
+it is not a usable gameplay workaround. The earlier
+direct launch command selects hardware and can reproduce the driver hang.
+`-Adapter Hardware` remains available for deliberate future investigation, but
+has not been re-tested since the device hang. `-GpuDiagnostics` requests D3D12
+debugging and DRED; the debug layer is currently absent on this machine, while
+DRED initializes successfully.
 It forcibly stops its own process at the deadline. That is a diagnostic timeout,
 not a successful gameplay test. The SDK's `--headless` suppresses prompts; a
 graphics window may still appear. Command-line child processes use hidden launch.

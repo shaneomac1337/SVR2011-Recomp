@@ -74,3 +74,66 @@ milestones require separate visual and interaction verification. Next, inspect a
 bounded graphical run and determine whether the game is rendering, waiting for
 input, or stalled during initialization. Repeated physical allocation errors and
 unknown audio-register writes remain observations, not established root causes.
+
+## WWE-logo crash investigation
+
+The user reported a crash while pressing Start at the WWE logo. Their log
+(`analysis/wwe-logo-user.log`, preserved from `svr2011_002.log`) ended with an
+unregistered target `0x82CFD9C8`. A longer startup probe reproduced that exact
+fatal address in `analysis/runtime-20260927-180039/`.
+
+Adding that entry revealed a second missed target, `0x82CF7068`, in
+`analysis/runtime-20260927-180218/`. The user had not interacted with that test,
+so Start is not a necessary trigger: the timed intro transition also reaches it.
+Generated instructions show valid dispatch thunks at both addresses: the first
+calls through an object vtable, and the second adjusts `r3` by -4 then tail-calls
+`0x82CF7110`. Neither was replaced by a stub. Strict code generation and native
+build succeeded after registering both entry points.
+
+The resulting build visibly reached the full SVR 2011 title screen with John Cena
+and "Press START button" (captured with PrintWindow from the game's own window).
+This is the first visually verified title-screen milestone. The next check is
+pressing Start there and observing whether a menu appears.
+
+The smoke harness now defaults to info-level logs, records elapsed runtime and
+fatal guest addresses, and returns an error for a crashed process. Timeout still
+means only that the process was alive at the deadline, not a gameplay pass.
+
+## Menu and gameplay rendering
+
+The user confirmed reaching and controlling the menu. Subsequent background
+gameplay execution reached missing callbacks `0x82ACF950` and `0x82ACF9A0`;
+both were registered, regenerated with strict validation, and rebuilt. The former
+is an argument-adjusting virtual-call thunk; these are genuine function entries,
+not success-returning replacements.
+
+The next hardware run (`analysis/runtime-20260927-180744/`) terminated after
+31.23 seconds with D3D12 `0x887A0006`, `DEVICE_HUNG`. The user independently
+reported a driver crash. Adapter: AMD Radeon RX 7900 XT, Windows driver version
+32.0.31041.3013. No further hardware-rendered runs were started after that report.
+Invalid texture-fetch descriptors appeared before the hang, but causality is
+unproven; the compatibility bypass was not enabled speculatively.
+
+The smoke harness now defaults to WARP software rendering. The first diagnostic
+run (`analysis/runtime-20260927-180957/`) confirmed Microsoft Basic Render Driver
+(vendor 0x1414/device 0x008C), enabled DRED, and survived its 60-second deadline
+with no fatal guest target or device-removal message. A captured frame showed
+"Load Successful" over the title screen. The D3D12 debug layer is unavailable on
+this machine; requesting it logs a warning, while DRED still initializes.
+
+This is an alternate diagnostic path, not a fix for the hardware hang. Verify the
+same background-gameplay scene in software before comparing renderer behavior.
+
+The follow-up software run (`analysis/runtime-20260927-181139/`) was stopped by
+the agent after the user reported a black screen and unacceptable performance.
+This was a deliberate external termination, not another observed game crash.
+WARP is not a usable gameplay workaround, and the hardware renderer defect remains
+unresolved. All test instances were closed. The original title/menu progress is
+preserved; no additional hardware runs or driver-setting changes were made.
+
+Next investigation: collect validated D3D12 draw/shader diagnostics for the
+background-gameplay scene, or prepare a separate Vulkan-enabled SDK build for
+comparison. The installed Windows SDK package has `REXGLUE_USE_VULKAN=OFF`, so
+Vulkan cannot be selected merely by changing the launch arguments. Do not treat
+the invalid-texture warning, SDK compatibility flags, or a backend switch as a
+proven fix without a controlled test.
