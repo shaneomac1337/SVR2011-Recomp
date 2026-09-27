@@ -152,6 +152,22 @@ def inspect_xex(data):
     return info
 
 
+def validate_destinations(iso, report, executable=None, assets=None):
+    """Keep reports separate from both the input image and extracted game data."""
+    source = iso.resolve()
+    report = report.resolve()
+    if report == source:
+        raise ValueError("Report path must not be the input image")
+    if executable is not None:
+        executable = executable.resolve()
+        if executable == source:
+            raise ValueError("Executable destination must not be the input image")
+        if report == executable:
+            raise ValueError("Report path must not be the executable destination")
+    if assets is not None and report.is_relative_to(assets.resolve()):
+        raise ValueError("Report path must be outside the extracted asset directory")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso", type=Path)
@@ -159,8 +175,10 @@ def main():
     parser.add_argument("--extract-executable", type=Path)
     parser.add_argument("--extract-all", type=Path, help="Extract/verify all files under this directory")
     args = parser.parse_args()
-    if args.report.resolve() == args.iso.resolve():
-        parser.error("Report path must not be the input image")
+    try:
+        validate_destinations(args.iso, args.report, args.extract_executable, args.extract_all)
+    except ValueError as error:
+        parser.error(str(error))
     disc = Disc(args.iso)
     try:
         files = disc.files()

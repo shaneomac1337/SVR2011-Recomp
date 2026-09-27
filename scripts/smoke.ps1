@@ -18,8 +18,9 @@ foreach ($argument in @('--headless', '--gpu_plugin=xenos', "--game_data_root=$p
 }
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $info
+$started = $false
 try {
-    $null = $process.Start()
+    $started = $process.Start()
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
     $timedOut = !$process.WaitForExit($Seconds * 1000)
@@ -30,6 +31,6 @@ try {
     $result | ConvertTo-Json | Set-Content "$run/result.json"
     $result | ConvertTo-Json
 } finally {
-    if (!$process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+    if ($started -and !$process.HasExited) { $process.Kill($true); $process.WaitForExit() }
     $process.Dispose()
 }

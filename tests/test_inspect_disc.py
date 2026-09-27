@@ -1,9 +1,12 @@
 import struct
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.inspect_disc import Disc, MAGIC, SECTOR, inspect_xex
+from scripts.inspect_disc import Disc, MAGIC, SECTOR, inspect_xex, main
 
 
 class DiscTests(unittest.TestCase):
@@ -67,6 +70,30 @@ class DiscTests(unittest.TestCase):
         struct.pack_into(">I", data, 20, 1)
         with self.assertRaisesRegex(ValueError, "Truncated"):
             inspect_xex(data)
+
+    def test_report_collision_does_not_modify_extracted_executable(self):
+        disc = self.disc()
+        entry, = disc.files()
+        assets = self.root / "assets"
+        disc.extract(entry, assets)
+        executable = assets / "default.xex"
+        with patch('sys.argv', ['inspect_disc', str(disc.path), '--extract-all',
+                               str(assets), '--report', str(executable)]):
+            with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+                main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(executable.read_bytes(), b"test")
+
+    def test_report_collision_with_executable_only_is_rejected(self):
+        disc = self.disc()
+        executable = self.root / "default.xex"
+        executable.write_bytes(b"original")
+        with patch('sys.argv', ['inspect_disc', str(disc.path), '--extract-executable',
+                               str(executable), '--report', str(executable)]):
+            with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+                main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(executable.read_bytes(), b"original")
 
 
 if __name__ == "__main__":

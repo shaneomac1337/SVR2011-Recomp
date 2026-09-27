@@ -20,5 +20,7 @@ includes = []
 0x824C6E38 = {}
 # Indirect call observed in the second startup probe.
 0x826E0F68 = {}
+# Indirect call observed after advancing past 0x826E0F68.
+0x826E4D40 = {}
 0x82BBA778 = {}
 0x82C2A020 = {}

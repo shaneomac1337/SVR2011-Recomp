@@ -1,7 +1,8 @@
 # SVR 2011 recompilation investigation
 
 Experimental Xbox 360 → Windows recompilation using ReXGlue. **Not yet playable.**
-The initial native executable builds; startup is under investigation.
+The native executable builds and survives a 20-second startup probe after fixing
+observed missing function entries. Menu rendering and gameplay remain unverified.
 See [the boot investigation](docs/boot-investigation.md) for measured results.
 
 This project uses locally supplied game data. Original disc images, extracted

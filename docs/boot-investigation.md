@@ -48,8 +48,29 @@ discovery; clean static analysis alone cannot prove every indirect target exists
 The runtime also logged physical allocation failures during initialization.
 Their causal relationship to startup failure has not been established.
 
+## Latest startup result
+
+Runtime-guided discovery subsequently added `0x826E0F68` and `0x826E4D40`.
+After strict regeneration and a successful incremental build, the run recorded in
+`analysis/runtime-20260927-175542/` survived the full 20-second probe. The harness
+terminated it at the deadline (`timed_out: true`, process exit `-1`). There was no
+fatal unregistered-function message in this run. Logs show D3D12 initialization,
+shader-cache loading, and continuing audio/playback calls.
+
+This proves progress beyond the observed early crashes, not a responsive game:
+a menu, rendered frame, controller response, and a complete match have **not**
+been visually verified. A stalled process can also survive a timeout.
+
+Code review found a report-path collision that could replace an extracted file
+with JSON. The extractor now rejects those destinations before reading/extracting;
+two regression tests preserve the original bytes. All nine Python tests pass.
+The Spec review reported no material findings for this initial investigation.
+
 ## Remaining work
 
 Track subsequent runtime results here. Do not describe a successful compile or
 a process surviving the smoke timeout as proof of a playable game. Menu and match
-milestones require separate visual and interaction verification.
+milestones require separate visual and interaction verification. Next, inspect a
+bounded graphical run and determine whether the game is rendering, waiting for
+input, or stalled during initialization. Repeated physical allocation errors and
+unknown audio-register writes remain observations, not established root causes.
