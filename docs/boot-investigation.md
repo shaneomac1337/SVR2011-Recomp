@@ -137,3 +137,36 @@ comparison. The installed Windows SDK package has `REXGLUE_USE_VULKAN=OFF`, so
 Vulkan cannot be selected merely by changing the launch arguments. Do not treat
 the invalid-texture warning, SDK compatibility flags, or a backend switch as a
 proven fix without a controlled test.
+
+## Vulkan comparison build (2026-09-27)
+
+The user authorized proceeding with Vulkan. Built the pinned v0.10.0 SDK source
+(`f5337cdc947ff6d4c4196737e2c807a48f2a1fc2`) together with the host in
+`out/build/win-amd64-relwithdebinfo-vulkan/`, with Vulkan ON and D3D12 OFF.
+The original D3D12 executable and DLLs were preserved. Vulkan uses separate
+cache and userdata subdirectories. No drivers or machine-wide SDKs were installed.
+
+Source-build integration needed the SDK's x86-64-v2 compiler flags, an explicit
+native Python executable (CMake initially selected a shim), materialization of
+libmspack's Windows symlink stubs, and an ImGui include directory for host UI
+headers. These are captured in the scripts and root CMake file. The SDK's version
+label says `0.10.0.0-dev.unknown` when used as a subdirectory because its version
+helper inspects the parent repository; the source commit is separately verified.
+
+The startup test in `analysis/runtime-20260927-182712/` ran for 25.18 seconds and
+was deliberately terminated at its 25-second deadline (`alive_at_deadline`).
+The log confirms **Vulkan device AMD Radeon RX 7900 XT**, API 1.4.349, vendor
+0x1002/device 0x744C. `analysis/vulkan-startup.png` shows the WWE safety intro
+rendering, with a Vulkan overlay reading 60 FPS. This is an intro observation,
+not a gameplay benchmark. No fatal guest targets, `VK_ERROR`, `DEVICE_LOST`, or
+`DEVICE_HUNG` messages appeared in this run. Heap-allocation errors and missing
+sound-bank warnings remain in the log; startup survival does not resolve those.
+
+The regular `scripts/play-vulkan.ps1` launcher was then opened for user testing.
+Menu-to-background-gameplay stability still needs confirmation. The launcher has
+no diagnostic timeout; close the game window to stop. Runtime logs are written
+to `analysis/vulkan-play-<timestamp>/`.
+
+Validation: successful configure/build, PowerShell syntax checks, all nine
+existing unit tests, repeatable source preparation, Vulkan/WARP rejection before
+launch, and independent Standards/Spec reviews with zero blocking findings.

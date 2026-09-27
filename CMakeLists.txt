@@ -22,3 +22,10 @@ else()
 endif()
 
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
+
+# The v0.10.0 source-tree runtime does not propagate ImGui's include directory
+# to the host, although its public UI headers include imgui.h.
+if(REXSDK_DIR)
+    target_include_directories(svr2011 PRIVATE
+        $<TARGET_PROPERTY:imgui::imgui,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()

@@ -3,8 +3,8 @@
 Experimental Xbox 360 → Windows recompilation using ReXGlue. **Gameplay is not yet reliable.**
 The title screen renders and the user confirmed menu/gamepad interaction. Background
 gameplay exposed further missing callbacks, followed by a D3D12 device hang on an
-AMD RX 7900 XT. Hardware-rendered testing is paused; the diagnostic harness now
-defaults to WARP software rendering.
+AMD RX 7900 XT. A separate Vulkan-only source build is available for comparison;
+the original D3D12 diagnostic harness still defaults to WARP software rendering.
 See [the boot investigation](docs/boot-investigation.md) for measured results.
 
 This project uses locally supplied game data. Original disc images, extracted
@@ -51,6 +51,41 @@ graphics window may still appear. Command-line child processes use hidden launch
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## Vulkan build and launch
+
+The Vulkan build uses the same ReXGlue v0.10.0 commit and generated game code,
+with `REXGLUE_USE_VULKAN=ON` and `REXGLUE_USE_D3D12=OFF`. Its executable and
+DLLs live in `out/build/win-amd64-relwithdebinfo-vulkan/`. The existing D3D12
+build is preserved. No system Vulkan SDK or driver installation is needed.
+
+After the initial bootstrap, extraction and code generation above:
+
+```powershell
+./scripts/prepare-vulkan.ps1
+./scripts/build.ps1 -Renderer Vulkan -Action Configure
+./scripts/build.ps1 -Renderer Vulkan -Action Build -Jobs 6
+./scripts/play-vulkan.ps1
+```
+
+The launcher opens the game without an additional console window and records
+logs under `analysis/vulkan-play-<timestamp>/`. Close the game window to stop.
+Vulkan uses separate `cache/vulkan/` and `userdata/vulkan/` directories, so its
+first launch has fresh settings and saves. It selects a Vulkan GPU automatically;
+check the runtime log for the selected adapter. There is no D3D12 fallback in
+this build. Rendering remains experimental; reaching a menu does not establish
+gameplay stability.
+
+For a bounded diagnostic run that terminates its own process after 60 seconds:
+
+```powershell
+./scripts/smoke.ps1 -Renderer Vulkan -Seconds 60
+```
+
+`-Adapter Warp` is rejected for Vulkan. `-GpuDiagnostics` requests Vulkan
+validation (requires separately available validation layers); the normal test
+does not require those layers. `prepare-vulkan.ps1` materializes libmspack's
+source symlink stubs on Windows and refuses to overwrite edited source files.
 
 ## Dependencies
 
