@@ -1,7 +1,8 @@
 # Launch the separate Vulkan-only build without a console window or test timeout.
 param(
     [switch]$PerfCapture,
-    [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'Baseline'
+    [switch]$Profile,
+    [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -21,11 +22,12 @@ foreach ($argument in @('--gpu_plugin=xenos', '--vulkan_device=-1',
     $info.ArgumentList.Add($argument)
 }
 if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
+if ($Profile) { $info.ArgumentList.Add('--svr_profile=true') }
 if ($Experiment -eq 'InvalidFetch') {
     $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
 }
 [ordered]@{
-    executable = $executable; experiment = $Experiment; perf_capture = [bool]$PerfCapture
+    executable = $executable; experiment = $Experiment; perf_capture = [bool]$PerfCapture; profile = [bool]$Profile
     arguments = @($info.ArgumentList)
 } | ConvertTo-Json -Depth 4 | Set-Content "$run/launch.json"
 $process = [System.Diagnostics.Process]::Start($info)

@@ -13,7 +13,8 @@ match. The picture went black during cinematic/finisher sequences, then returned
 afterward. Audio behavior during black screens has not been confirmed. At the
 end of the run, the log records missing target `0x82600ED0`; that original
 five-instruction dispatch thunk is now registered and the build passes. It is
-adjacent to `0x82600EB8`. Runtime validation of this latest seed is pending.
+adjacent to `0x82600EB8`. The subsequent 598.52-second run exited normally,
+with no fatal guest targets.
 
 The capture has 12,000 rows. A 100-second interval (70–170 seconds after the first
 measured guest swap) has 5,999 frames, 59.992 guest FPS, median 16.533 ms,
@@ -53,8 +54,11 @@ Ranked hypotheses:
 `TextureCache::BindingInfoFromFetchConstant` explicitly rejects the first type
 unless `gpu_allow_invalid_fetch_constants` is set. The current logs contain many
 of these rejections. This establishes a plausible rendering path, not a proven
-black-screen cause. The option still rejects completely invalid descriptor types
-and zero-data textures. Baseline remains the default.
+black-screen cause by itself. The option still rejects completely invalid
+descriptor types and zero-data textures. In the actual comparison run
+`analysis/vulkan-play-20260927-185531`, the user confirmed that entrances,
+finishers and cutscenes became visible. InvalidFetch is now the provisional
+launcher default to retain that rendering fix; repeated validation is pending.
 
 ```powershell
 ./scripts/play-vulkan.ps1 -PerfCapture -Experiment InvalidFetch
@@ -65,7 +69,14 @@ once warm before claiming a speed improvement. Record visibility as well as
 timings; an FPS increase achieved by skipping rendering is not a pass. Close the
 game manually afterward. `launch.json` records the exact arguments, and
 `result.json` records the exit. Return to the baseline with `-Experiment Baseline`.
-This experiment has been prepared but not yet validated in gameplay.
+The comparison exited normally after 598.52 seconds. Its 20,459 valid intervals
+cover 596.9604 seconds: median 33.032 ms, p95 35.529 ms, p99 44.503 ms,
+maximum 82.651 ms. This mixed-scene capture is not evidence of a speedup.
+Ten-second windows initially range around 40 FPS and later settle at exactly
+30 FPS; scene markers are unavailable. The user reports a slow background fight
+and stuttering during otherwise playable match action, despite a stable
+Afterburner presentation graph. Guest swaps and displayed refreshes must be
+assessed separately.
 
 ## Deeper profiling
 
@@ -76,14 +87,27 @@ game is running:
 
 ```powershell
 ./scripts/prepare-profiler.ps1
+./scripts/play-vulkan.ps1 -PerfCapture -Profile
+# In a separate session, once the target scene is visible:
 ./scripts/capture-profile.ps1 -Seconds 30
 ```
 
 Only the capture ends after 30 seconds. This script neither starts nor stops the
 game. Output is `analysis/profile-<timestamp>/session.tracy` plus per-zone
 self-time statistics. Profiling adds overhead: run this separately from the
-unprofiled Baseline/InvalidFetch timing comparison. Attachment and data export
-still require an end-to-end runtime check.
+unprofiled Baseline/InvalidFetch timing comparison. The SDK uses delayed manual
+Tracy initialization but did not call Startup. The app now starts Tracy before
+guest execution only with `--svr_profile=true`; SDK runtime shutdown already
+stops it. The capture script checks for the game's listener before attaching.
+
+End-to-end attachment and CSV export passed in
+`analysis/profile-20260927-191123/` (30.07 seconds, 4,915,043 zones).
+This initial trace includes the title screen and cannot diagnose the reported
+background-fight slowdown. A previous attachment attempt against the old build
+never connected; the 18:55:31 rendering comparison therefore remained unprofiled.
+The runtime selects the AMD RX 7900 XT Vulkan device, so software rendering is
+not the explanation. CPU waits, presentation pacing and GPU execution still
+need to be distinguished in a capture of the affected scene.
 
 ## Acceptance before calling this path ready
 

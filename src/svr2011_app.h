@@ -19,6 +19,9 @@ class Svr2011App : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
+    if (rex::cvar::GetFlagByName("svr_profile") == "true") {
+      rex::perf::Profiler::Startup();
+    }
     // v0.10.0 defines perf_log_csv and writes counters at guest swaps, but
     // does not open the requested file. Initialize it before guest threads run.
     const auto path = rex::cvar::GetFlagByName("perf_log_csv");
