@@ -163,7 +163,13 @@ not a gameplay benchmark. No fatal guest targets, `VK_ERROR`, `DEVICE_LOST`, or
 sound-bank warnings remain in the log; startup survival does not resolve those.
 
 The regular `scripts/play-vulkan.ps1` launcher was then opened for user testing.
-Menu-to-background-gameplay stability still needs confirmation. The launcher has
+In `analysis/vulkan-play-20260927-182805/`, a later captured frame
+(`analysis/vulkan-play.png`, around 18:29:25) shows Cena and Orton rendered in the
+ring with the "Press START button For Main Menu" prompt. The overlay reads
+Vulkan / 60 FPS. The process remained responsive and no fatal guest-function or
+device-loss message had appeared. This verifies rendering beyond the intro;
+controller behavior and sustained match stability still need user confirmation.
+The launcher has
 no diagnostic timeout; close the game window to stop. Runtime logs are written
 to `analysis/vulkan-play-<timestamp>/`.
 
