@@ -32,3 +32,9 @@ includes = []
 0x82ACF950 = {}
 # Sibling callback reached during the following background-gameplay probe.
 0x82ACF9A0 = {}
+# Match-start indirect callback (Vulkan runtime 20260927-182805).
+# Original code is a single blr; referenced by four read-only callback tables.
+0x82BFAE18 = {}
+# Next callback reached after the match starts (Vulkan runtime 20260927-183339).
+# Six-instruction virtual dispatch thunk, sibling of 0x82ACF9A0.
+0x82ACF9B8 = {}

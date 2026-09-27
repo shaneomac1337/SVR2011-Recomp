@@ -176,3 +176,39 @@ to `analysis/vulkan-play-<timestamp>/`.
 Validation: successful configure/build, PowerShell syntax checks, all nine
 existing unit tests, repeatable source preparation, Vulkan/WARP rejection before
 launch, and independent Standards/Spec reviews with zero blocking findings.
+
+## First match-start failures and measured slowdown
+
+The user confirmed playing the background fight, then reported a crash starting
+One on One, Randy Orton versus Rey Mysterio (arena unspecified). The regular
+Vulkan run above ended at 18:30:01 with missing guest target `0x82BFAE18`.
+The original image contains `4E800020` (`blr`) there, followed by zero padding,
+with four read-only references at `820B07DC`, `820B0878`, `820B08C0`, and
+`820B2A60`. Added the true function entry to the manifest, regenerated strictly,
+and verified the emitted registration and original return behavior. This is not
+a fabricated success stub or a GPU device-loss error.
+
+The retest, `analysis/vulkan-play-20260927-183339/`, reached the match according
+to the user, then exited at 18:35:20 on missing target `0x82ACF9B8`. The agent did
+not terminate this run. That address is a six-instruction virtual dispatch thunk
+ending in `bctr`, adjacent to the previously registered `0x82ACF9A0`. It was also
+added as a discovery seed. Its runtime match-start validation is pending.
+
+Added optional `-PerfCapture` to both launchers. The app's `OnPostSetup` opens
+the SDK's existing `perf_log_csv` output before guest execution; v0.10.0 declares
+the option and has the CSV writer but does not initialize the file itself.
+The graphics plugin records intervals at `PM4_XE_SWAP`. Binary inspection in
+review confirmed the host and plugin use the same runtime counter state. The SDK
+locks the CSV on Windows, so read it after exit. A forced crash/timeout can lose
+the last buffered frames.
+
+The retest produced 3,780 CSV rows spanning 99.19 seconds of positive guest-swap
+intervals. Three consecutive ten-second windows averaged 32.41, 32.20, and
+32.10 guest FPS (median frame time ~33.06 ms; 95th percentile ~45.9 ms). Another
+window included an 816 ms stall. These measurements record game output rather
+than the external overlay's apparent 60 FPS. The expected guest-swap rate and
+simulation speed for this scene have not been established, so the relationship
+between the ~32 FPS windows and perceived slow motion remains unverified.
+Shader compilation and invalid-texture warnings are present, but causality
+has not been demonstrated. No timing, vsync, or invalid-texture bypass settings
+were changed.

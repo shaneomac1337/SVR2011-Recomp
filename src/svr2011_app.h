@@ -5,6 +5,8 @@
 #pragma once
 
 #include <rex/rex_app.h>
+#include <rex/cvar.h>
+#include <rex/perf/counter.h>
 
 class Svr2011App : public rex::ReXApp {
  public:
@@ -16,12 +18,20 @@ class Svr2011App : public rex::ReXApp {
         PPCImageConfig));
   }
 
+  void OnPostSetup() override {
+    // v0.10.0 defines perf_log_csv and writes counters at guest swaps, but
+    // does not open the requested file. Initialize it before guest threads run.
+    const auto path = rex::cvar::GetFlagByName("perf_log_csv");
+    if (!path.empty()) {
+      rex::perf::SetCsvLogPath(path);
+    }
+  }
+
   // Override virtual hooks for customization:
   // void OnPostInitLogging() override {}
   // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

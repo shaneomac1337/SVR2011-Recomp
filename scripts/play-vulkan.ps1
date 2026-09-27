@@ -1,4 +1,5 @@
 # Launch the separate Vulkan-only build without a console window or test timeout.
+param([switch]$PerfCapture)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $executable = "$projectRoot/out/build/win-amd64-relwithdebinfo-vulkan/svr2011.exe"
@@ -16,6 +17,7 @@ foreach ($argument in @('--gpu_plugin=xenos', '--vulkan_device=-1',
     '--log_level=info', '--log_flush_interval=1')) {
     $info.ArgumentList.Add($argument)
 }
+if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
 $process = [System.Diagnostics.Process]::Start($info)
 Write-Output "Vulkan game started (PID $($process.Id)). Logs: $run"
 $process.Dispose()

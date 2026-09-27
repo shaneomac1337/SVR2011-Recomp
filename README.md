@@ -68,6 +68,12 @@ After the initial bootstrap, extraction and code generation above:
 ./scripts/play-vulkan.ps1
 ```
 
+Use `./scripts/play-vulkan.ps1 -PerfCapture` to record guest frame intervals and
+runtime counters to `perf.csv` alongside the run log. Close the game before
+reading the CSV: the SDK holds the file exclusively on Windows. Frame intervals
+measure guest swap submissions, unlike an external presentation-FPS overlay.
+The optional capture does not change game timing or renderer settings.
+
 The launcher opens the game without an additional console window and records
 logs under `analysis/vulkan-play-<timestamp>/`. Close the game window to stop.
 Vulkan uses separate `cache/vulkan/` and `userdata/vulkan/` directories, so its

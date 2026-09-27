@@ -3,7 +3,8 @@ param(
     [ValidateSet('info', 'debug', 'trace')][string]$LogLevel = 'info',
     [ValidateSet('D3D12', 'Vulkan')][string]$Renderer = 'D3D12',
     [ValidateSet('Warp', 'Hardware')][string]$Adapter = 'Warp',
-    [switch]$GpuDiagnostics
+    [switch]$GpuDiagnostics,
+    [switch]$PerfCapture
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -43,6 +44,7 @@ if ($Renderer -eq 'Vulkan') {
     if ($GpuDiagnostics) { $info.ArgumentList.Add('--d3d12_debug') }
 }
 $process = [System.Diagnostics.Process]::new()
+if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
 $process.StartInfo = $info
 $started = $false
 $timer = [System.Diagnostics.Stopwatch]::StartNew()
