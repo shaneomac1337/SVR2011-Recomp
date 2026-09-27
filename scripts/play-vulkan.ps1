@@ -2,13 +2,26 @@
 param(
     [switch]$PerfCapture,
     [switch]$Profile,
+    [string]$SettingsPath,
+    [string]$RunDirectory,
     [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch'
 )
 $ErrorActionPreference = 'Stop'
+$sessionMutex = [Threading.Mutex]::new($false, 'Local\SVR2011-Vulkan-Game')
+$ownsSession = $false
+try { $ownsSession = $sessionMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsSession = $true }
+if (!$ownsSession) { $sessionMutex.Dispose(); throw 'A Vulkan game session is already running.' }
+try {
+if (Get-Process svr2011 -ErrorAction SilentlyContinue) { throw 'The game is already running. Close it normally before starting another session.' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
+. "$PSScriptRoot/Launcher.Core.ps1"
+$settings = $null
+if ($SettingsPath) { $settings = Read-SvrSettings $SettingsPath }
 $executable = "$projectRoot/out/build/win-amd64-relwithdebinfo-vulkan/svr2011.exe"
 if (!(Test-Path $executable)) { throw 'Build first with scripts/build.ps1 -Renderer Vulkan.' }
-$run = Join-Path $projectRoot ("analysis/vulkan-play-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$run = if ($RunDirectory) { $RunDirectory } else {
+    Join-Path $projectRoot ("analysis/vulkan-play-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+}
 New-Item -ItemType Directory -Force $run | Out-Null
 $info = [System.Diagnostics.ProcessStartInfo]::new()
 $info.FileName = $executable
@@ -21,6 +34,10 @@ foreach ($argument in @('--gpu_plugin=xenos', '--vulkan_device=-1',
     '--log_level=info', '--log_flush_interval=1')) {
     $info.ArgumentList.Add($argument)
 }
+if ($settings) {
+    foreach ($argument in (Get-SvrDisplayArguments $settings)) { $info.ArgumentList.Add($argument) }
+    if ($settings.perfCapture) { $PerfCapture = $true }
+}
 if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
 if ($Profile) { $info.ArgumentList.Add('--svr_profile=true') }
 if ($Experiment -eq 'InvalidFetch') {
@@ -28,6 +45,7 @@ if ($Experiment -eq 'InvalidFetch') {
 }
 [ordered]@{
     executable = $executable; experiment = $Experiment; perf_capture = [bool]$PerfCapture; profile = [bool]$Profile
+    settings = $settings
     arguments = @($info.ArgumentList)
 } | ConvertTo-Json -Depth 4 | Set-Content "$run/launch.json"
 $process = [System.Diagnostics.Process]::Start($info)
@@ -55,4 +73,8 @@ try {
     Write-Output "Game exited normally. Logs: $run"
 } finally {
     $process.Dispose()
+}
+} finally {
+    $sessionMutex.ReleaseMutex()
+    $sessionMutex.Dispose()
 }

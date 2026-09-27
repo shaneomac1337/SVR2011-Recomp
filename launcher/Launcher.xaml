@@ -1,0 +1,85 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SVR 2011 · Launcher" Width="860" Height="740" MinWidth="820" MinHeight="700"
+        WindowStartupLocation="CenterScreen" Background="#F5F6F9" FontFamily="Segoe UI" FontSize="14">
+  <Window.Resources>
+    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="#202430"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style TargetType="Label"><Setter Property="Foreground" Value="#202430"/><Setter Property="Padding" Value="0,0,0,6"/></Style>
+    <Style TargetType="ComboBox"><Setter Property="MinHeight" Value="36"/><Setter Property="Padding" Value="9,5"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style>
+    <Style TargetType="Button">
+      <Setter Property="Padding" Value="16,10"/><Setter Property="MinHeight" Value="40"/>
+      <Setter Property="Background" Value="#E5E8F0"/><Setter Property="Foreground" Value="#202430"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+        <Border x:Name="Surface" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.85"/></Trigger>
+          <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.7"/></Trigger>
+          <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="#637CCD"/><Setter TargetName="Surface" Property="BorderThickness" Value="2"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Surface" Property="Opacity" Value="0.45"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+  </Window.Resources>
+  <Grid Background="#F5F6F9">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="240"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Border Background="#171B29" Padding="28,36">
+      <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <StackPanel>
+          <TextBlock Text="SMACKDOWN" Foreground="#B6C6FF" FontSize="20" FontWeight="Bold"/>
+          <TextBlock Text="VS. RAW" Foreground="#FFFFFF" FontSize="27" FontWeight="Bold"/>
+          <TextBlock Text="2011" Foreground="#FFFFFF" FontSize="64" FontWeight="Bold" Margin="-3,0,0,12"/>
+          <Border Height="3" Background="#647FF2" Width="46" HorizontalAlignment="Left" Margin="0,0,0,22"/>
+          <TextBlock Text="Back to the ring." Foreground="#FFFFFF" FontSize="20"/>
+          <TextBlock Text="Your game. Your settings." Foreground="#BEC4D4" Margin="0,9,0,0"/>
+        </StackPanel>
+        <StackPanel Grid.Row="2">
+          <TextBlock Text="Vulkan renderer" Foreground="#FFFFFF" FontWeight="SemiBold"/>
+          <TextBlock Text="Cinematic compatibility enabled" Foreground="#BEC4D4" Margin="0,6,0,24"/>
+          <TextBlock Text="Community PC project" Foreground="#BEC4D4" FontSize="12"/>
+          <TextBlock Text="Experimental build" Foreground="#BEC4D4" FontSize="12" Margin="0,4,0,0"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+    <Grid Grid.Column="1" Margin="32,30,32,24">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <StackPanel>
+        <TextBlock Text="Ready for a match" FontSize="27" FontWeight="SemiBold"/>
+        <TextBlock Text="Settings apply the next time you play." Foreground="#535D72" Margin="0,6,0,22"/>
+      </StackPanel>
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel x:Name="SettingsPanel" Margin="0,0,8,0">
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel><Label Content="_Display mode" Target="{Binding ElementName=DisplayMode}"/><ComboBox x:Name="DisplayMode" AutomationProperties.Name="Display mode"><ComboBoxItem Content="Borderless fullscreen" Tag="Borderless"/><ComboBoxItem Content="Windowed" Tag="Windowed"/></ComboBox></StackPanel>
+            <StackPanel Grid.Column="2"><Label Content="_Window size" Target="{Binding ElementName=WindowSize}"/><ComboBox x:Name="WindowSize" AutomationProperties.Name="Window size"><ComboBoxItem Content="1280 × 720" Tag="1280x720"/><ComboBoxItem Content="1600 × 900" Tag="1600x900"/><ComboBoxItem Content="1920 × 1080" Tag="1920x1080"/></ComboBox></StackPanel>
+          </Grid>
+          <Label Content="_Internal resolution" Target="{Binding ElementName=Scale}" Margin="0,20,0,0"/>
+          <ComboBox x:Name="Scale" AutomationProperties.Name="Internal resolution"><ComboBoxItem Content="1× · Native (recommended)" Tag="1"/><ComboBoxItem Content="2× · Experimental" Tag="2"/><ComboBoxItem Content="3× · Experimental" Tag="3"/></ComboBox>
+          <TextBlock x:Name="ScaleHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0" Text="Changes rendering detail, independently of window size."/>
+          <Label Content="_Controller support" Target="{Binding ElementName=Controller}" Margin="0,20,0,0"/>
+          <ComboBox x:Name="Controller" AutomationProperties.Name="Controller support"><ComboBoxItem Content="Automatic · Standard controller support" Tag="Auto"/><ComboBoxItem Content="Xbox compatibility · XInput" Tag="Xbox"/></ComboBox>
+          <TextBlock Text="Connect your controller before starting. Player slots are assigned automatically." Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>
+          <CheckBox x:Name="PerfCapture" Content="Record frame timings for troubleshooting" Margin="0,22,0,0" VerticalContentAlignment="Center"/>
+          <Border BorderBrush="#D4D9E6" BorderThickness="0,1,0,0" Margin="0,23,0,0" Padding="0,16,0,0">
+            <TextBlock Text="For smooth gameplay, leave RivaTuner’s FPS limit off for this game." Foreground="#414C65" FontSize="13"/>
+          </Border>
+          <StackPanel Orientation="Horizontal" Margin="0,16,0,12">
+            <Button x:Name="Save" Content="_Save settings" Margin="0,0,10,0"/>
+            <Button x:Name="Reset" Content="Restore defaults"/>
+          </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
+      <StackPanel Grid.Row="2" Margin="0,15,0,0">
+        <TextBlock x:Name="Status" Text="Ready. Your progress stays in the existing save folder." Foreground="#414C65" FontSize="13" Margin="0,0,0,12" AutomationProperties.LiveSetting="Polite"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Button x:Name="Play" Content="_Play SVR 2011" Background="#354DB0" Foreground="White" FontSize="17" FontWeight="SemiBold" MinHeight="52"/>
+          <Button x:Name="Logs" Grid.Column="2" Content="Open _logs"/>
+        </Grid>
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

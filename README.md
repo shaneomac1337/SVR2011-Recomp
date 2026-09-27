@@ -1,11 +1,21 @@
 # SVR 2011 recompilation investigation
 
-Experimental Xbox 360 → Windows recompilation using ReXGlue. **Gameplay is not yet reliable.**
-The title screen renders and the user confirmed menu/gamepad interaction. Background
-gameplay exposed further missing callbacks, followed by a D3D12 device hang on an
-AMD RX 7900 XT. A separate Vulkan-only source build is available for comparison;
-the original D3D12 diagnostic harness still defaults to WARP software rendering.
-See [the boot investigation](docs/boot-investigation.md) for measured results.
+Experimental Xbox 360 → Windows recompilation using ReXGlue. The user has confirmed
+smooth One on One gameplay on Vulkan with entrances, finishers and cutscenes
+working. Keep RivaTuner's FPS limiter off. Other match types and higher resolution
+scales are not yet validated; the menu's background fight remains slower.
+See [the performance investigation](docs/performance.md) for measured results and
+[the boot investigation](docs/boot-investigation.md) for earlier failures.
+
+## Play with the launcher
+
+Double-click **SVR 2011.lnk** in this folder. The native Windows launcher saves
+display mode, window size, internal resolution, controller support mode and
+optional frame capture. Native resolution is the default; 2× and 3× are marked
+experimental. Closing the launcher does not close the game.
+
+To recreate the shortcut, run `./scripts/install-launcher.ps1` in PowerShell 7.
+See [launcher instructions](launcher/README.md) for settings, logs and checks.
 
 This project uses locally supplied game data. Original disc images, extracted
 files, generated game translations, tools and build outputs are excluded from Git.

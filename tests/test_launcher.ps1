@@ -1,0 +1,40 @@
+$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/../scripts/Launcher.Core.ps1"
+function Assert($Value, [string]$Message) { if (!$Value) { throw $Message } }
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+[IO.Directory]::CreateDirectory($scratch) | Out-Null
+$path = Join-Path $scratch 'settings.json'
+try {
+    $defaults = Read-SvrSettings $path
+    Assert ($defaults.scale -eq 1 -and !$defaults.perfCapture) 'Safe defaults failed.'
+    $defaults.displayMode = 'Windowed'
+    $defaults.windowSize = '1920x1080'
+    $defaults.scale = 3
+    $defaults.controller = 'Xbox'
+    $defaults.perfCapture = $true
+    Save-SvrSettings $path $defaults
+    $loaded = Read-SvrSettings $path
+    Assert ($loaded.scale -eq 3 -and $loaded.perfCapture) 'Settings did not round-trip.'
+    $arguments = @(Get-SvrDisplayArguments $loaded)
+    foreach ($argument in @('--fullscreen=false','--window_width=1920','--window_height=1080',
+        '--draw_resolution_scale_x=3','--draw_resolution_scale_y=3','--resolution_scale=3','--input_backend=xinput')) {
+        Assert ($arguments -contains $argument) "Missing argument: $argument"
+    }
+    foreach ($field in @('scale','windowSize','controller','displayMode','perfCapture','version')) {
+        $invalid = New-SvrSettings
+        $invalid[$field] = 'invalid'
+        $rejected = $false
+        try { Save-SvrSettings $path $invalid } catch { $rejected = $true }
+        Assert $rejected "Invalid $field was accepted."
+        Assert ((Read-SvrSettings $path).scale -eq 3) 'Invalid save overwrote valid settings.'
+    }
+    Set-Content -LiteralPath $path -Value '{broken'
+    $rejected = $false
+    try { Read-SvrSettings $path } catch { $rejected = $true }
+    Assert $rejected 'Corrupt settings silently accepted.'
+    Write-Output 'Launcher settings, argument mapping and invalid-file checks passed.'
+} finally {
+    # Only remove the exact temporary file and then the now-empty test directory.
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+    [IO.Directory]::Delete($scratch)
+}
