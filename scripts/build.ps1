@@ -39,6 +39,7 @@ if ($Renderer -eq 'Vulkan') {
     if (!(Test-Path "$source/CMakeLists.txt")) { throw 'Run scripts/prepare-vulkan.ps1 first.' }
     $revision = (Invoke-Hidden (Get-Command git).Source @('-C', $source, 'rev-parse', 'HEAD') | Out-String).Trim()
     if ($revision -ne 'f5337cdc947ff6d4c4196737e2c807a48f2a1fc2') { throw "Unexpected ReXGlue source revision: $revision" }
+    & "$PSScriptRoot/apply-vulkan-patches.ps1"
     $buildDirectory += '-vulkan'
     $configureArguments += @('-B', $buildDirectory, "-DREXSDK_DIR=$source", '-DREXGLUE_USE_VULKAN=ON', '-DREXGLUE_USE_D3D12=OFF')
     $configureArguments += "-DPYTHON_EXECUTABLE=$((Get-Command python.exe -ErrorAction Stop).Source)"
@@ -52,5 +53,10 @@ if ($Action -eq 'Codegen') {
     Invoke-Hidden $cmake $configureArguments -LogPath "$projectRoot/analysis/configure$logSuffix.log"
 } else {
     Invoke-Hidden $cmake @('--build', $buildDirectory, '--parallel', "$Jobs") -LogPath "$projectRoot/analysis/build$logSuffix.log"
+    if ($Renderer -eq 'Vulkan') {
+        # The SDK's POST_BUILD copy can be skipped when only a runtime DLL changes.
+        . "$PSScriptRoot/Sync-VulkanRuntime.ps1"
+        Sync-VulkanRuntime "$source/out/win-amd64" $buildDirectory
+    }
 }
 Write-Output "$Action completed. Logs: $projectRoot/analysis/"
