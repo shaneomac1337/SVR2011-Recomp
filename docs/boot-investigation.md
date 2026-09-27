@@ -192,7 +192,11 @@ The retest, `analysis/vulkan-play-20260927-183339/`, reached the match according
 to the user, then exited at 18:35:20 on missing target `0x82ACF9B8`. The agent did
 not terminate this run. That address is a six-instruction virtual dispatch thunk
 ending in `bctr`, adjacent to the previously registered `0x82ACF9A0`. It was also
-added as a discovery seed. Its runtime match-start validation is pending.
+added as a discovery seed. The next run, `analysis/vulkan-play-20260927-183832/`,
+remained running beyond both prior crash points. A frame captured around 18:40:05
+(`analysis/vulkan-match-retest.png`) shows Orton and Mysterio fighting in the
+selected match with a crowd and wrestler HUD. User confirmation of controls and
+longer-match stability remains pending; the game was left open for testing.
 
 Added optional `-PerfCapture` to both launchers. The app's `OnPostSetup` opens
 the SDK's existing `perf_log_csv` output before guest execution; v0.10.0 declares
