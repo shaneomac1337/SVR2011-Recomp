@@ -3,6 +3,9 @@ param(
     [switch]$PerfCapture,
     [switch]$Profile,
     [switch]$SynchronousShaders,
+    [switch]$KeyboardInput,
+    # FSI keeps EDRAM contents across frames the guest does not redraw; see docs/performance.md.
+    [ValidateSet('fbo', 'fsi')][string]$RenderTargetPath = 'fsi',
     [string]$SettingsPath,
     [string]$RunDirectory,
     [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch'
@@ -42,13 +45,23 @@ if ($settings) {
 if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
 if ($Profile) { $info.ArgumentList.Add('--svr_profile=true') }
 if ($SynchronousShaders) { $info.ArgumentList.Add('--async_shader_compilation=false') }
+# Keyboard-to-controller emulation lets automated loops drive menus.
+if ($KeyboardInput) { $info.ArgumentList.Add('--mnk_mode=true') }
+$info.ArgumentList.Add("--render_target_path_vulkan=$RenderTargetPath")
 if ($Experiment -eq 'InvalidFetch') {
     $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
+}
+$runtimeHashes = [ordered]@{}
+foreach ($name in @('svr2011.exe','rexruntimerd.dll','rexgpu-xenosrd.dll','TracyClientrd.dll')) {
+    $runtimeHashes[$name] = (Get-FileHash -LiteralPath (Join-Path (Split-Path $executable -Parent) $name) -Algorithm SHA256).Hash
 }
 [ordered]@{
     executable = $executable; experiment = $Experiment; perf_capture = [bool]$PerfCapture; profile = [bool]$Profile
     settings = $settings
     synchronous_shaders = [bool]$SynchronousShaders
+    keyboard_input = [bool]$KeyboardInput
+    render_target_path = $RenderTargetPath
+    runtime_sha256 = $runtimeHashes
     arguments = @($info.ArgumentList)
 } | ConvertTo-Json -Depth 4 | Set-Content "$run/launch.json"
 $process = [System.Diagnostics.Process]::Start($info)

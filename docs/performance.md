@@ -210,6 +210,54 @@ The 12-second F8-triggered capture is armed for game run
 `vulkan-play-20260927-201213-658`; the character-select recording is pending.
 No rendering workaround has been promoted.
 
+## Focus-loss freeze: recovery candidate
+
+The user reproduced a persistent frozen picture and unusable controls in both
+borderless and windowed mode. Run `vulkan-play-20260927-204235-173` remained
+responsive to Windows and continued submitting guest frames: the ten-second
+frozen-state trace `profile-20260927-204434` contains 447 swap CPU zones.
+Two captures of character select were byte-identical, and a Win32 redraw did
+not recover the session. Continuing swaps therefore does not establish healthy
+gameplay or input.
+
+A brief UI-thread context/stack-memory snapshot located the instruction pointer
+in `NtUserMsgWaitForMultipleObjectsEx`, with the immediate return address in
+SDL's `WIN_WaitEventTimeout`. This was a stack scan, not a fully unwound debugger
+backtrace. It supports an idle UI loop, rather than a blocked Vulkan call at
+that instant. Lost/coalesced event wake-ups are a hypothesis, not a proven cause.
+
+The idle-wakeup candidate was rejected. Run `vulkan-play-20260927-205624-662`
+initially received an old runtime DLL because the SDK post-build copy did not
+run when only the DLL changed. Run `vulkan-play-20260927-210254-094` then used the
+verified new runtime and still froze. Its window had no pending paint, so the
+50 ms wake-up workaround had nothing to recover. That workaround is removed.
+
+Read-only inspection using compiler-verified object layouts found the presenter
+in `kNone` paint mode with `kUnconnectedRetryAtStateChange` and a zero connected
+surface size. The window was minimized. Restoring it without changing size left
+those states unchanged. Restoring and then changing its width by one pixel
+immediately changed the presenter to `kUIThreadOnRequest` and
+`kConnectedPaintable`; the original width was restored afterward. This confirms
+that a surface-size notification can recover presentation in the same process.
+User confirmation of visible output and controls remains separate from this
+internal-state observation.
+
+`patches/rexglue-window-restore.patch` refreshes the presenter surface connection
+in `Window::OnRestored`, before listener callbacks. SDL can restore the same
+pixel dimensions without triggering `OnActualSizeUpdate`; the presenter still
+needs notification after a minimized, zero-area surface was disconnected.
+Vulkan builds apply this patch to the pinned SDK through
+`scripts/apply-vulkan-patches.ps1`. The changed object files compile; linking,
+deployment and repeated restore validation await closure of the user's test.
+
+The build script now explicitly synchronizes all three runtime DLLs after each
+Vulkan build and verifies their hashes. Matching PDBs are copied for diagnostics.
+`tests/test_runtime_sync.ps1` checks stale replacement, unchanged-file preservation
+and incomplete-runtime rejection. Each launch records the actual executable and
+DLL hashes. Deployment refuses to overwrite this build's running game.
+Focus-loss recovery and match smoothness still require runtime validation;
+character-select flicker remains open.
+
 ## Acceptance before calling this path ready
 
 - Repeated full One on One matches complete and return to the menu without fatal
@@ -221,3 +269,186 @@ No rendering workaround has been promoted.
 - Cold-cache shader behavior is measured and improved without hiding draws.
 - Results record GPU/driver, build, configuration, arena and cache state. Test
   more than one run before promoting an experimental setting to the default.
+
+### Character-select capture resumed, 2026-09-27 21:18
+
+The restore patch was linked and deployed after the user closed the game.
+Build synchronization verified all runtime DLLs (one updated). Restore behavior
+still needs runtime confirmation; compilation alone is not acceptance.
+Run `vulkan-play-20260927-211756-479` uses native-scale windowed Immediate
+presentation, the established invalid-fetch fix, normal asynchronous shaders,
+and frame timing capture. Window recording is armed on F8 for 12 seconds in
+`transition-20260927-211810-884`. This is the baseline for the flicker comparison;
+no visual result is available until the user triggers the transition.
+### Baseline flicker captured
+
+`transition-20260927-211810-884` contains 720 sampled frames over 12 seconds.
+Visual inspection of frames 94, 95, 108 and 194 confirms loss of the background
+scene and wrestler previews while roster portraits, labels and buttons remain
+visible. This is not a full-window black presentation. Seven intervals start
+at frames 95, 138, 190, 236, 283, 330 and 381; durations are 217, 284, 283, 283,
+284, 301 and 300 ms respectively (capture timestamps, not GPU frame timings).
+The abrupt losses recur while navigating between characters. Cause remains
+unproven. Next compare repeated switching between the same two characters in
+the same process, then synchronous shaders if necessary. No game restart or
+termination is needed for the repeated-character comparison.
+
+### Repeated-character result, 2026-09-27 21:23
+
+Run `vulkan-play-20260927-212323-410`, capture
+`transition-20260927-212338-899`: 720 sampled frames. The user repeatedly switched
+between John Cena and John Morrison. Visual checks at frames 41/42, 134 and 578
+confirm the same scene loss with the roster UI intact. Ten intervals lasted
+300, 300, 282, 282, 299, 282, 316, 284, 301 and 268 ms; exact endpoints are in
+`black-intervals.json`. Repeated returns do not eliminate the issue. This weakens
+the first-use shader/resource warm-up explanation, but does not rule out an
+asynchronous rendering or resource-lifetime fault. Next controlled comparison:
+keep settings identical and add `-SynchronousShaders`, capture the same two
+characters. The current game must be closed by the user before that launch.
+
+### Synchronous-shader comparison: unchanged
+
+Run `vulkan-play-20260927-212533-128` confirms
+`--async_shader_compilation=false` in the recorded launch arguments. Capture
+`transition-20260927-212546-821` has 720 sampled frames. Eleven complete black
+scene intervals lasted 282–301 ms, plus one interval cut off by recording end.
+Frame 52 visibly retains the roster/UI while losing the background and preview.
+The user confirms the same symptom. Disabling async compilation does not fix it;
+normal launch defaults are unchanged.
+
+The next diagnostic is draw submission, rather than another rendering option.
+`patches/rexglue-flicker-diagnostics.patch` adds the opt-in, default-off
+`vulkan_draw_diagnostics` flag. Each `[DEBUG-flicker]` swap summary records source
+address/size, copy-mode request count, and per active vertex/pixel shader pair:
+draw requests / host draws recorded / requested indices / recorded vertices.
+Counts are collected on the GPU command thread. Recorded host draws are not proof
+of correct final pixels. Normalized pixel shader usage may differ from the active
+guest shader, so these pairs identify command groups rather than final pipelines.
+Compare group disappearance against drops inside the backend before examining
+render targets/textures. This temporary diagnostic is not for performance scoring
+and must be removed after investigation. The modified C++ object compiles.
+
+`scripts/play-vulkan.ps1 -DrawDiagnostics` enables this explicitly. The window
+recorder now includes Unix UTC milliseconds to align visual events with log times.
+A runtime rebuild/deployment is pending the user closing PID 9552; no active test
+was stopped. Upstream compatibility issue
+https://github.com/xenia-project/game-compatibility/issues/1505 was consulted but
+its visible report does not diagnose this character-select symptom.
+
+### Draw diagnostic result, 2026-09-27 21:32
+
+Run `vulkan-play-20260927-213116-812`, capture
+`transition-20260927-213134-333`, analysis `compare-flicker-draws.py` and
+`draw-comparison.json` in the capture directory. The recorder captured twelve
+complete flashes. UTC capture timestamps were compared with local-time log
+entries converted to epoch milliseconds; a 65 ms exclusion around each visual
+transition reduces capture/presentation boundary ambiguity. The retained sample
+contains 89 black-scene and 308 visible-scene swaps.
+
+All retained samples have four copy-mode requests per swap and the same reported
+frontbuffer source/size. Median requested/submitted draws are 323/323 during
+black intervals and 322/322 during visible intervals. Requested and recorded
+draw counts match for every shader group in this sample. Multiple shader groups
+with substantial geometry disappear from requests during black intervals, while
+the persistent menu groups continue. For example, all four pixel shader groups
+paired with vertex shader `01B64B30579F80F6` have zero requests during black
+samples. This rules against Vulkan IssueDraw early-return drops explaining
+those missing groups; it does NOT prove that final render-target contents are
+correct or that the guest intentionally blanks the scene.
+
+Two earlier filtering paths exist in the common command processor: type-3
+packet bin predicates, and visibility-query kill draws. The temporary diagnostic
+now logs `[DEBUG-flicker-packet]` for each of these skipped cases, including
+opcode/bin selection/mask for predicates and index count for visibility skips.
+The diagnostic flag is defined in the common processor and declared by Vulkan.
+Both modified objects compile. This extension is not deployed while the current
+user session is open. The next run can distinguish these filters from absent
+guest commands without changing rendering behavior or introducing a workaround.
+
+### Packet filters excluded; loading-state probe prepared
+
+Run `vulkan-play-20260927-213646-021`, capture
+`transition-20260927-213701-259`: 97 black-scene and 296 visible-scene swaps after
+boundary exclusions reproduce the earlier missing-group pattern. No
+`[DEBUG-flicker-packet]` events appear in the log covering the capture. Preserved
+the first rotated log as `runtime-preserved.log` in the capture directory so
+continuous diagnostic logging cannot erase that evidence. Common bin-predicate
+and visibility-kill filters do not explain this captured loss. This is not proof
+that all GPU/texture behavior is correct.
+
+Read-only analysis of the existing guest image found registration-table pairs:
+`StartNowLoading` -> 0x8274B868, `EndNowLoading` -> 0x8274B8A0,
+`IsNowLoadingFade` -> 0x8274B8D8. Generated code maps these to a manager pointer
+at guest 0x82EC1AA0. The query sub_825849B8 checks manager+60 and delegates to
+sub_82595860, which returns true when child+36 is zero and child+16 is nonzero.
+The Lua-facing IsNowLoadingFade wrapper inverts that result; the sampler records
+the inner query value, not a confidently named fade state.
+
+For current PID 13848 the logged guest virtual base is 0x200000000; the manager
+currently points to 0xAED2B8D0, child to 0xABEB AE20 (without the space).
+`analysis/capture-loading-state.py` opens the process read-only, waits for F8,
+and samples manager/child fields for 13 seconds with UTC timestamps. It never
+writes guest memory or suspends the process. It is session-specific diagnostic
+code, not a supported launcher feature. Next compare state changes to a fresh
+12-second visual capture in the same session; no rebuild or restart is required.
+
+### Loading-fade probe result: negative
+
+Capture `transition-20260927-214223-296` contains 720 visual samples and twelve
+black-scene intervals lasting 282–299 ms. The companion read-only probe
+`loading-state-213646.csv` contains 2,393 samples; its start is 10 ms before the
+visual recording. Analysis `compare-loading-state.py` writes
+`loading-comparison.json` beside the visual capture.
+
+With 65 ms excluded around transition boundaries, all 349 black-scene samples
+and 1,283 visible-scene samples return inner query sub_825849B8 = 1. Every sampled
+32-bit field in the manager's first 64 bytes and child's first 40 bytes is
+identical between those groups. The Lua wrapper's IsNowLoadingFade result is
+therefore false throughout these samples. This particular global loading/fade
+controller does not correlate with the flicker; do not patch or bypass it.
+This does not exclude other loading or character-preview controllers. No guest
+memory was changed. No more identical captures are requested at this point;
+further work needs a more specific character-preview/render-generation seam.
+
+### Resolved: render-target path, 2026-09-27 22:55
+
+Cause: the default Vulkan host-render-target (FBO) path does not preserve the
+scene across frames in which the guest skips its 3D pass. On each switch the game
+stops issuing the stage/preview draws for 17–18 frames while it swaps models, but
+keeps its four resolve copies per swap. Real hardware keeps re-resolving the last
+scene still held in EDRAM (the user confirms no flash on console); the FBO path
+resolves black. Fragment shader interlock (`--render_target_path_vulkan=fsi`),
+which emulates EDRAM directly, keeps the stage visible; only the preview slot is
+empty while the new model loads, as expected.
+
+Evidence, all at native-scale windowed Immediate presentation:
+
+| Path | Switches | Flashes |
+| --- | --- | --- |
+| FBO (previous default) | 20 over runs `…222814-220`, `…224128-408` | 20, each 17–18 frames (282–301 ms) |
+| FSI | 26 in run `…224548-178` | 0 |
+| FSI via new default, clean build, run `…225649-268` | 10 | 0 |
+
+Performance, run `vulkan-play-20260927-224923-769` (FSI, Cena vs Orton, Raw arena,
+warm cache): gameplay 262–308 s after first swap has 59.98 guest FPS, median
+16.63 ms, p95 19.05 ms, p99 20.04 ms, max 31.64 ms, no intervals over two frame
+budgets. The FBO baseline above is 59.99 / 16.53 / 18.04 / 18.54 / 33.12 ms. Menus
+run at 42–46 FPS as they did before. One short match only; gameplay p95/p99
+are about 1–1.5 ms higher, so a longer comparison is still worthwhile.
+
+Ruled out along the way: a single long guest wait (a kernel wait tracer showed no
+wait spanning a flash), CPU-bound loading (per-thread CPU during a switch matched
+idle), file I/O (synchronous and immediate). The 22 ms loader cadence observed in
+one session is the game's 10 ms job scheduler alternating two worker groups; it
+is unchanged under FSI.
+
+`scripts/play-vulkan.ps1` now passes `--render_target_path_vulkan=fsi` by default
+(`-RenderTargetPath fbo` opts out; the runtime falls back to FBO automatically on
+GPUs without fragment shader interlock). The launcher uses the same script. All
+temporary `[DEBUG-flicker*]` instrumentation and its patches/switches were removed.
+
+Regression check: launch with `scripts/play-vulkan.ps1 -KeyboardInput` (enables
+`mnk_mode`; keyboard emulation is off by default and ignores keys until the window
+receives a focus change), reach One on One character select, then run
+`scripts/check-charselect-flicker.ps1`. It briefly takes focus, alternates D/A,
+and exits 1 if any scene-dark run of three or more frames appears.

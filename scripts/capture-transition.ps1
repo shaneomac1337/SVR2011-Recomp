@@ -29,10 +29,11 @@ public static class SvrTransitionCapture {
     Directory.CreateDirectory(directory);
     var timer = Stopwatch.StartNew();
     using (var csv = new StreamWriter(Path.Combine(directory, "frames.csv"))) {
-      csv.WriteLine("frame,elapsed_ms,capture_ms,mean_rgb,black_fraction");
+      csv.WriteLine("frame,elapsed_ms,capture_ms,mean_rgb,black_fraction,utc_ms");
       int index = 0;
       while (timer.Elapsed.TotalSeconds < seconds && IsWindow(window)) {
         long start = timer.ElapsedMilliseconds;
+        long utcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         RECT rect;
         if (!GetWindowRect(window, out rect)) break;
         int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
@@ -55,8 +56,8 @@ public static class SvrTransitionCapture {
               sum += intensity; if (intensity < 12) black++; samples++;
             }
             preview.Save(Path.Combine(directory, index.ToString("D5") + ".jpg"), ImageFormat.Jpeg);
-            csv.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1},{2},{3:F3},{4:F4}",
-              index, start, timer.ElapsedMilliseconds-start, (double)sum/samples, (double)black/samples));
+            csv.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0},{1},{2},{3:F3},{4:F4},{5}",
+              index, start, timer.ElapsedMilliseconds-start, (double)sum/samples, (double)black/samples, utcMs));
           }
         }
         index++;
