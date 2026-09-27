@@ -80,6 +80,13 @@ profiling commands, and acceptance criteria for the One on One path.
 Use `-Experiment Baseline` to compare without that texture setting, or `-Profile`
 to enable an on-demand Tracy connection. Smooth gameplay still needs validation.
 
+For the current Vulkan build, leave the RivaTuner FPS limiter disabled for
+`svr2011.exe`: the user reported smooth match gameplay after disabling it, and
+the subsequent capture includes seven minutes at 60.002 guest FPS with a maximum
+frame interval of 23.1 ms. The external overlay measures presentation and may
+show much higher FPS. Background-fight performance and repeated match validation
+remain open; see the performance investigation above.
+
 The launcher opens the game without an additional console window and records
 logs under `analysis/vulkan-play-<timestamp>/`. Close the game window to stop.
 The PowerShell launcher waits without a timeout, then reports normal exit or a

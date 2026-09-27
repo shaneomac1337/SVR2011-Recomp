@@ -109,6 +109,56 @@ The runtime selects the AMD RX 7900 XT Vulkan device, so software rendering is
 not the explanation. CPU waits, presentation pacing and GPU execution still
 need to be distinguished in a capture of the affected scene.
 
+## Background-fight synchronization comparison (19:20)
+
+The user confirmed the scene before capture. Screenshot
+`analysis/background-profile-scene.png` shows Cena–Orton in the menu practice
+ring and an external presentation counter of 342 FPS. Trace
+`analysis/profile-20260927-192042/session.tracy` covers 30.09 seconds. Its CPU
+zone export contains 1,297 guest swaps, with 1,296 inter-swap intervals averaging
+23.265 ms (about 43 FPS), median 17.507 ms, p95 34.551 ms, maximum 36.203 ms.
+The Vulkan swap CPU zone averages 0.226 ms and peaks at 0.939 ms. These are CPU
+durations, not GPU timestamp measurements.
+
+The command processor spends 13.581 aggregate seconds waiting for commands and
+12.148 seconds in WAIT_REG_MEM. Of 11,606 WAIT_REG_MEM events, most return
+immediately, but p95 is 10.166 ms and maximum 20.000 ms. This makes the SDK's
+millisecond polling sleeps a candidate for missed frame deadlines. It does not
+prove those waits are unnecessary: guest synchronization may require them.
+
+An optional 1 ms polling-cap patch compiled, but was never linked or tested in
+the game. It was deferred after the user reported smooth gameplay from disabling
+the RivaTuner limiter. SDK source and the launcher were restored; the candidate
+patch is retained only in `analysis/rexglue-wait-polling-deferred.patch`.
+The measured improvement therefore cannot be attributed to that patch.
+Do not use `vsync=false` as a presentation-only test: that also changes guest
+vblank from the configured video rate to 1,000 Hz in this SDK.
+
+## Smooth gameplay after disabling the external limiter
+
+The user closed `analysis/vulkan-play-20260927-191954/` normally (603.88 seconds,
+exit code zero, no fatal guest targets) and reported that actual gameplay became
+very smooth after turning off the RivaTuner limit. The precise limiter-toggle
+time was not recorded. The background screenshot already shows 342 presentation
+FPS, so the background's roughly 43 guest FPS must not simply be blamed on the
+old 60 FPS limiter; whether that scene still feels slow needs confirmation.
+
+The later 180–600-second interval contains 25,201 frames over 420.0025 seconds:
+60.002 guest FPS, median 16.553 ms, p95 18.499 ms, p99 19.012 ms and maximum
+23.096 ms. There are no intervals over 33.333 ms. Scene boundaries were not
+recorded, but the long steady interval supports the user's smooth-match report.
+Tracy was connected only for the earlier background capture, not this interval.
+
+```powershell
+python scripts/analyze_perf.py analysis/vulkan-play-20260927-191954/perf.csv --start 180 --end 600
+```
+
+Current working setup: Vulkan on RX 7900 XT, texture compatibility enabled,
+RivaTuner frame limiter disabled, original guest timing. Ordinary play does not
+need `-Profile`. This is a user-observed limiter interaction, not proof of the
+exact interception/presentation mechanism. Repeated match and cinematic testing
+remains necessary before calling the port production-ready.
+
 ## Acceptance before calling this path ready
 
 - Repeated full One on One matches complete and return to the menu without fatal
