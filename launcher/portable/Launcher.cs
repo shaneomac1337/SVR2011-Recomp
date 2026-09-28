@@ -1,10 +1,9 @@
-// Portable player launcher: first-run disc setup, settings, play and bug reports.
+// Portable player launcher: first-run disc setup, settings, play and session logs.
 // Everything lives next to this executable so the folder can be moved or zipped.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -177,7 +176,7 @@ namespace Svr2011Launcher
                 Window = (Window)XamlReader.Load(stream);
             foreach (var name in new[] { "BuildLabel", "SetupView", "IsoPath", "Browse", "SetupProgress", "SetupDetail", "SetupStatus",
                 "Install", "PlayView", "SettingsPanel", "DisplayMode", "WindowSize", "Scale", "ScaleHelp", "Presentation",
-                "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs", "Report",
+                "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs",
                 "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings", "FramePacing", "FramePacingHelp" })
                 ui[name] = (FrameworkElement)Window.FindName(name);
 
@@ -201,8 +200,7 @@ namespace Svr2011Launcher
                 SetStatus("Defaults restored. Choose Save or Play to keep them.", false);
             };
             Button("Play").Click += (s, e) => PlayClicked();
-            Button("Logs").Click += (s, e) => OpenFolder(runPath ?? layout.LogsDir, false);
-            Button("Report").Click += (s, e) => ReportClicked();
+            Button("Logs").Click += (s, e) => LogsClicked();
             Button("Browse").Click += (s, e) => BrowseClicked();
             Button("Install").Click += (s, e) => InstallClicked();
             Button("SettingsToggle").Click += (s, e) => ShowSettingsDrawer(ui["SettingsDrawer"].Visibility != Visibility.Visible);
@@ -456,7 +454,7 @@ namespace Svr2011Launcher
             Button("Play").IsEnabled = true;
             ((ContentControl)ui["Play"]).Content = "_Play";
             if (code == 0) SetStatus("Game closed normally. Ready for another match.", false);
-            else SetStatus("The game stopped unexpectedly. Choose Bug report to save the logs for an issue on the project's GitHub page.", true);
+            else SetStatus("The game stopped unexpectedly. Choose Logs; the newest session folder holds the log for an issue on the project's GitHub page.", true);
         }
 
         static List<string> FatalTargets(string log)
@@ -494,45 +492,14 @@ namespace Svr2011Launcher
             }
         }
 
-        void ReportClicked()
+        // Open the logs folder with the newest session selected, ready to zip for an issue.
+        void LogsClicked()
         {
-            try
-            {
-                var sessions = Directory.Exists(layout.LogsDir)
-                    ? new DirectoryInfo(layout.LogsDir).GetDirectories("session-*").OrderByDescending(d => d.Name, StringComparer.Ordinal).ToList()
-                    : new List<DirectoryInfo>();
-                if (sessions.Count == 0) { SetStatus("There are no game sessions to report yet.", false); return; }
-                if (game != null) { SetStatus("Close the game first so its log is complete.", true); return; }
-                var session = sessions[0];
-                var zipPath = Path.Combine(layout.LogsDir, "bug-report-" + session.Name.Substring("session-".Length) + ".zip");
-                if (File.Exists(zipPath)) File.Delete(zipPath);
-                using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
-                {
-                    foreach (var file in session.GetFiles())
-                        zip.CreateEntryFromFile(file.FullName, file.Name, CompressionLevel.Optimal);
-                    if (File.Exists(layout.VersionFile)) zip.CreateEntryFromFile(layout.VersionFile, "version.txt");
-                    var entry = zip.CreateEntry("system.txt");
-                    using (var writer = new StreamWriter(entry.Open())) writer.Write(SystemSummary());
-                }
-                OpenFolder(zipPath, true);
-                SetStatus("Bug report saved: " + Path.GetFileName(zipPath) + ". Open an issue on the project's GitHub page and attach this file.", false);
-            }
-            catch (Exception error) { SetStatus("Could not create the bug report: " + error.Message, true); }
-        }
-
-        static string SystemSummary()
-        {
-            var text = new StringBuilder();
-            text.AppendLine("OS: " + Environment.OSVersion.VersionString + (Environment.Is64BitOperatingSystem ? " (64-bit)" : ""));
-            text.AppendLine("Processors: " + Environment.ProcessorCount);
-            try
-            {
-                using (var search = new System.Management.ManagementObjectSearcher("SELECT Name, DriverVersion FROM Win32_VideoController"))
-                    foreach (var gpu in search.Get())
-                        text.AppendLine("GPU: " + gpu["Name"] + " (driver " + gpu["DriverVersion"] + ")");
-            }
-            catch (Exception) { text.AppendLine("GPU: unavailable"); }
-            return text.ToString();
+            var newest = Directory.Exists(layout.LogsDir)
+                ? new DirectoryInfo(layout.LogsDir).GetDirectories("session-*").OrderByDescending(d => d.Name, StringComparer.Ordinal).FirstOrDefault()
+                : null;
+            if (newest == null) OpenFolder(layout.LogsDir, false);
+            else OpenFolder(newest.FullName, true);
         }
 
         void OpenFolder(string path, bool select)

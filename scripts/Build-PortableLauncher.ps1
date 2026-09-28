@@ -7,8 +7,7 @@ function Build-PortableLauncher([string]$OutputPath, [string]$IconPath) {
     $output = [IO.Path]::GetFullPath($OutputPath)
     $arguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', "/out:$output",
         "/lib:$framework\WPF", '/r:PresentationFramework.dll', '/r:PresentationCore.dll', '/r:WindowsBase.dll',
-        '/r:System.Xaml.dll', '/r:System.Web.Extensions.dll', '/r:System.IO.Compression.dll',
-        '/r:System.IO.Compression.FileSystem.dll', '/r:System.Management.dll', '/r:System.Core.dll',
+        '/r:System.Xaml.dll', '/r:System.Web.Extensions.dll', '/r:System.Core.dll',
         "/resource:$source\Portable.xaml,Svr2011Launcher.Portable.xaml",
         "$source\Launcher.cs", "$source\Settings.cs", "$source\DiscImage.cs", "$source\KeyArt.cs")
     if ($IconPath) { $arguments += "/win32icon:$([IO.Path]::GetFullPath($IconPath))" }

@@ -221,7 +221,7 @@
             <Label Content="_Controller support" Target="{Binding ElementName=Controller}" Margin="0,18,0,0"/>
             <ComboBox x:Name="Controller" AutomationProperties.Name="Controller support"><ComboBoxItem Content="Automatic · Most controllers" Tag="Auto"/><ComboBoxItem Content="Xbox compatibility · XInput" Tag="Xbox"/></ComboBox>
             <TextBlock Style="{StaticResource Help}" Text="Connect your controller before starting. Player slots are assigned automatically."/>
-            <CheckBox x:Name="PerfCapture" Content="Record _frame timings for bug reports" Margin="0,22,0,0"/>
+            <CheckBox x:Name="PerfCapture" Content="Record _frame timings for troubleshooting" Margin="0,22,0,0"/>
           </StackPanel>
         </ScrollViewer>
         <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,18,0,0">
@@ -243,7 +243,6 @@
         </StackPanel>
         <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
           <Button x:Name="SettingsToggle" Style="{StaticResource Ghost}" Content="Se_ttings" Margin="0,0,10,0"/>
-          <Button x:Name="Report" Style="{StaticResource Ghost}" Content="_Bug report" Margin="0,0,10,0"/>
           <Button x:Name="Logs" Style="{StaticResource Ghost}" Content="_Logs" Margin="0,0,20,0"/>
           <Button x:Name="Play" Style="{StaticResource Primary}" Content="_Play" MinWidth="200"/>
         </StackPanel>

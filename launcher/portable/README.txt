@@ -56,7 +56,7 @@ WHAT WORKS
 ----------
 Tested: One on One matches, including entrances, finishers and cutscenes.
 Not tested yet: other match types, Create modes, Road to WrestleMania,
-Universe and online. These may crash. If one does, send a bug report as
+Universe and online. These may crash. If one does, please report it as
 described below.
 
 
@@ -64,20 +64,16 @@ REPORTING PROBLEMS
 ------------------
 If the game crashes or looks wrong:
 1. Close the game.
-2. In the launcher choose "Bug report".
-3. Open an issue on the project's GitHub page and attach the highlighted
-   zip file, together with a short description of what you were doing.
+2. In the launcher choose "Logs". The logs folder opens with your newest
+   session folder already selected.
+3. Right-click that selected folder, choose "Compress to ZIP file", and
+   attach the zip to a new issue on the project's GitHub page, together
+   with a short description of what you were doing.
 
-The report contains:
-- the log files of your last session: runtime log, launcher settings,
-  game arguments and exit result
-- version.txt, the version of this build
-- system.txt: your Windows version, processor count, and graphics card
-  name with driver version
-
-The logs can contain folder paths, and those can show your Windows user
-name. Check the zip before you post it publicly. It does not contain your
-saves or game files.
+The session folder holds the game log, your launcher settings and the
+exact game arguments. It never contains your saves or game files. The log
+can contain folder paths, and those can show your Windows user name, so
+check it before posting it publicly.
 
 
 FOLDERS
@@ -87,7 +83,7 @@ game\          the PC program (do not change)
 gamedata\      game files copied from your disc (created on first start)
 userdata\      your saves and launcher settings
 cache\         shader cache (safe to delete)
-logs\          logs of your recent sessions and bug reports
+logs\          logs of your recent game sessions
 
 
 LEGAL

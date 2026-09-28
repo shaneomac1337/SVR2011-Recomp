@@ -18,7 +18,7 @@ file against that release and refuses anything else.
 | Tested hardware | Windows 11 with an AMD Radeon RX 7900 XT. Other GPUs and Windows 10 have not been tried. |
 
 The game runs at 60 FPS in the tested modes. Untested modes may crash; an
-[issue](../../issues) with a bug report attached helps fix them.
+[issue](../../issues) with the session log attached helps fix them.
 
 ## Play it
 
@@ -60,12 +60,11 @@ Steps:
   setting. 2x and 3x are sharper but experimental.
 - **Updating to a new version:** your saves are in `userdata`. Copy that folder
   into the new version's folder before you play.
-- **Crash or wrong graphics:** close the game, choose **Bug report** in the
-  launcher, and attach the zip it highlights to a new [issue](../../issues).
-  The zip holds the session logs, launcher settings, Windows version, processor
-  count, and graphics card with driver version. Log lines can contain folder
-  paths, which may show your Windows user name; check the zip before posting it.
-  It never contains saves or game files.
+- **Crash or wrong graphics:** close the game and choose **Logs** in the
+  launcher, which selects the newest `session-...` folder. Zip that folder and
+  attach it to a new [issue](../../issues). It holds the game log, launcher
+  settings and game arguments, never saves or game files. Log lines can contain
+  folder paths, which may show your Windows user name; check it before posting.
 
 ## Build from source
 
