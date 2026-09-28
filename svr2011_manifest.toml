@@ -37,3 +37,6 @@ includes = []
 0x82600ED0 = {}
 # Four-instruction getter after a tail branch; discovery folds it into sub_8236F100.
 0x8236F120 = {}
+# Superstar Threads attire thunk after sub_8247B6E0's tail call, referenced by the
+# vtable entry at 0x8201D868 (li r4,0; addi r3,r3,244; b 0x823C8BD8).
+0x8247B6F8 = {}

@@ -13,8 +13,8 @@ file against that release and refuses anything else.
 
 | | |
 | --- | --- |
-| Tested and playable | Exhibition matches with entrances, finishers and cutscenes; backstage brawls; menus |
-| Not tested yet | Road to WrestleMania (can crash at any point), Create modes, Universe, online |
+| Tested and playable | Exhibition matches with entrances, finishers and cutscenes; backstage brawls; menus; Create a Superstar, Superstar Threads and Paint Tool |
+| Not tested yet | Road to WrestleMania (can crash at any point), other create modes, Universe, online |
 | Tested hardware | Windows 11 with an AMD Radeon RX 7900 XT. Other GPUs and Windows 10 have not been tried. |
 
 Exhibition matches usually play without problems at 60 FPS. Road to WrestleMania
@@ -47,13 +47,12 @@ Steps:
 ### If something is off
 
 - **Stutter or uneven speed:** keep *Display sync* on *VSync* and *Frame pacing*
-  on *Automatic*. The game runs itself at 60 FPS like the console, so no
+  on *Even 60 Hz*. The game runs itself at 60 FPS like the console, so no
   external limiter is needed. If you use RivaTuner (RTSS) anyway, set its limit
   to exactly 60 or off; any other value stutters.
-- **Motion not quite smooth:** *Automatic* frame pacing shows each frame as soon
-  as the game finishes it on monitors of 100 Hz and up, and holds frames to an
-  even 60 Hz beat on 60 Hz monitors. If your monitor has FreeSync or G-Sync,
-  *Match game timing* is smoothest at any refresh rate.
+- **Motion not quite smooth:** check that *Frame pacing* is on *Even 60 Hz*. It
+  shows every frame on an even 60 Hz beat a few milliseconds after the game
+  finishes it, which is smoothest on every monitor.
 - **A short hitch the first time you see a new move or arena:** the release
   includes prebuilt shaders for the tested modes, which the game prepares while
   it starts. Anything else compiles the first time it appears, is saved in
