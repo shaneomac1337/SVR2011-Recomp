@@ -198,7 +198,7 @@ index 53b8c0b..a07e12d 100644
      }
      toast = queue_.front();
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index 7360ed9..fe6cabb 100644
+index 7360ed9..4043378 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
 @@ -12,12 +12,16 @@
@@ -269,7 +269,7 @@ index 7360ed9..fe6cabb 100644
    PaintResult paint_result = PaintResult::kNotPresented;
    bool request_repaint_at_tick = false;
    bool request_repaint_immediately = false;
-@@ -613,6 +643,177 @@ bool Presenter::RefreshGuestOutput(
+@@ -613,6 +643,181 @@ bool Presenter::RefreshGuestOutput(
      guest_output_mailbox_writable_ = (3 - last_acquired - guest_output_mailbox_writable_) % 3;
    }
  
@@ -343,6 +343,10 @@ index 7360ed9..fe6cabb 100644
 +    }
 +  }
 +  const Clock::time_point log_origin = Clock::now();
++  if (log) {
++    // The log line's wall-clock time lines up present_us 0 with other runtime log events.
++    REXLOG_INFO("Paced presentation log started (present_us 0)");
++  }
 +  Clock::time_point last_logged_present{};
 +  double interval_sum_ms = 0.0, interval_square_sum_ms = 0.0, interval_max_ms = 0.0;
 +  while (true) {
@@ -447,7 +451,7 @@ index 7360ed9..fe6cabb 100644
    // Trigger the presentation on the host.
    PaintResult paint_result = PaintResult::kNotPresented;
    {
-@@ -645,8 +846,6 @@ bool Presenter::RefreshGuestOutput(
+@@ -645,8 +850,6 @@ bool Presenter::RefreshGuestOutput(
        host_gpu_loss_callback_(false, false);
      }
    }
@@ -456,7 +460,7 @@ index 7360ed9..fe6cabb 100644
  }
  
  void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConfig& new_config) {
-@@ -1313,9 +1512,10 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
+@@ -1313,9 +1516,10 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
    if (!REXCVAR_GET(host_present_from_non_ui_thread)) {
      return PaintMode::kUIThreadOnRequest;
    }
@@ -469,7 +473,7 @@ index 7360ed9..fe6cabb 100644
      return PaintMode::kUIThreadOnRequest;
    }
    if (!ui_drawers_.empty()) {
-@@ -1498,6 +1698,9 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
+@@ -1498,6 +1702,9 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
    assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
    assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
    PaintResult result = PaintAndPresentImpl(execute_ui_drawers);
