@@ -16,7 +16,7 @@ try { $script:settings = Read-SvrSettings $SettingsPath } catch {
 $reader = [System.Xml.XmlNodeReader]::new([xml](Get-Content "$projectRoot/launcher/Launcher.xaml" -Raw))
 try { $window = [Windows.Markup.XamlReader]::Load($reader) } finally { $reader.Close() }
 $ui = @{}
-foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','FramePacing','FramePacingHelp','Controller','PerfCapture','Save','Reset','Play','Logs','Status','SettingsPanel')) {
+foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','FramePacing','FramePacingHelp','Controller','PerfCapture','Sharpening','Save','Reset','Play','Logs','Status','SettingsPanel')) {
     $ui[$name] = $window.FindName($name)
 }
 function Set-Status([string]$Message, [bool]$ErrorState = $false) {
@@ -29,7 +29,7 @@ function Select-Value($Control, $Value) {
 function Update-DisplayHelp {
     $ui.WindowSize.IsEnabled = $ui.DisplayMode.SelectedItem.Tag -eq 'Windowed'
     $ui.ScaleHelp.Text = if ([int]$ui.Scale.SelectedItem.Tag -gt 1) {
-        'Higher detail uses more GPU resources. Check entrances and finishers; return to native if rendering breaks.'
+        'More detail on models and the arena. Needs a stronger GPU: 3× uses about twice the GPU time of 1×.'
     } else { 'Native rendering is the validated setting. Window size does not change rendering detail.' }
     $ui.PresentationHelp.Text = switch ($ui.Presentation.SelectedItem.Tag) {
         'Mailbox' { 'Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable. Needs a gameplay check.' }
@@ -49,6 +49,7 @@ function Show-Settings($Value) {
     Select-Value $ui.Presentation $Value.presentation
     Select-Value $ui.FramePacing $Value.framePacing
     $ui.PerfCapture.IsChecked = $Value.perfCapture
+    $ui.Sharpening.IsChecked = $Value.sharpening
     Update-DisplayHelp
     $script:loading = $false
 }
@@ -61,6 +62,7 @@ function Read-Controls {
     $value.presentation = [string]$ui.Presentation.SelectedItem.Tag
     $value.framePacing = [string]$ui.FramePacing.SelectedItem.Tag
     $value.perfCapture = [bool]$ui.PerfCapture.IsChecked
+    $value.sharpening = [bool]$ui.Sharpening.IsChecked
     return $value
 }
 function Set-Dirty {
@@ -72,6 +74,7 @@ function Set-Dirty {
 Show-Settings $script:settings
 foreach ($name in @('DisplayMode','WindowSize','Scale','Controller','Presentation','FramePacing')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
 $ui.PerfCapture.Add_Click({ Set-Dirty })
+$ui.Sharpening.Add_Click({ Set-Dirty })
 $ui.Save.Add_Click({
     try { Save-SvrSettings $SettingsPath (Read-Controls); Set-Status 'Settings saved. They apply the next time you play.' }
     catch { Set-Status "Could not save settings: $($_.Exception.Message)" $true }

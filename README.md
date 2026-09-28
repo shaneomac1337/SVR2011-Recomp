@@ -57,8 +57,10 @@ Steps:
   includes prebuilt shaders for the tested modes, which the game prepares while
   it starts. Anything else compiles the first time it appears, is saved in
   `cache`, and is smooth from then on.
-- **Image looks soft:** *1x Native* internal resolution is the tested
-  setting. 2x and 3x are sharper but experimental.
+- **Image looks soft:** keep *Sharpen the image* on (the default). It upscales
+  with AMD FSR 1 at 1x and sharpens with CAS at 2x and 3x, at almost no cost.
+  2x and 3x add real detail if your GPU has room. Menu text and 2D art come from
+  the disc at 720p, so they stay the same at every setting.
 - **Updating to a new version:** your saves are in `userdata`. Copy that folder
   into the new version's folder before you play.
 - **Crash or wrong graphics:** close the game and choose **Logs** in the

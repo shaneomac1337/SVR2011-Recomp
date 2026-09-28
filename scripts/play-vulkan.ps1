@@ -12,7 +12,8 @@ param(
     [string]$RunDirectory,
     [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch',
     # Extra runtime cvars for experiments, for example '--gpu_wait_reg_mem_stats=true'.
-    [string[]]$ExtraArguments = @()
+    [string[]]$ExtraArguments = @(),
+    [ValidateSet('RelWithDebInfo', 'Release')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
 $sessionMutex = [Threading.Mutex]::new($false, 'Local\SVR2011-Vulkan-Game')
@@ -25,7 +26,7 @@ $projectRoot = Split-Path $PSScriptRoot -Parent
 . "$PSScriptRoot/Launcher.Core.ps1"
 $settings = $null
 if ($SettingsPath) { $settings = Read-SvrSettings $SettingsPath }
-$executable = "$projectRoot/out/build/win-amd64-relwithdebinfo-vulkan/svr2011.exe"
+$executable = "$projectRoot/out/build/win-amd64-$($Configuration.ToLowerInvariant())-vulkan/svr2011.exe"
 if (!(Test-Path $executable)) { throw 'Build first with scripts/build.ps1 -Renderer Vulkan.' }
 $run = if ($RunDirectory) { $RunDirectory } else {
     Join-Path $projectRoot ("analysis/vulkan-play-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
@@ -68,7 +69,9 @@ foreach ($argument in $ExtraArguments) {
     $info.ArgumentList.Add($argument)
 }
 $runtimeHashes = [ordered]@{}
-foreach ($name in @('svr2011.exe','rexruntimerd.dll','rexgpu-xenosrd.dll','TracyClientrd.dll')) {
+$runtimeNames = if ($Configuration -eq 'Release') { @('svr2011.exe','rexruntime.dll','rexgpu-xenos.dll') }
+    else { @('svr2011.exe','rexruntimerd.dll','rexgpu-xenosrd.dll','TracyClientrd.dll') }
+foreach ($name in $runtimeNames) {
     $runtimeHashes[$name] = (Get-FileHash -LiteralPath (Join-Path (Split-Path $executable -Parent) $name) -Algorithm SHA256).Hash
 }
 [ordered]@{

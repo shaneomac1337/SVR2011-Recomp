@@ -43,8 +43,8 @@ TIPS
   other value makes it stutter.
 - "Even 60 Hz" frame pacing is the smoothest on every monitor, including
   FreeSync, G-Sync and high refresh rates.
-- "1x Native" internal resolution is the tested setting. 2x and 3x look
-  sharper but are experimental.
+- Keep "Sharpen the image" on. It makes 1x look much crisper and costs
+  almost nothing. 2x and 3x add more detail if your GPU can handle them.
 - Shaders for the tested modes come prebuilt and are prepared while the
   game starts. A scene nobody has tested yet can hitch briefly the first
   time; it is saved in the "cache" folder and smooth from then on.

@@ -32,6 +32,10 @@ try {
             Assert ($argsForMode -contains '--vulkan_allow_present_mode_fifo_relaxed=false') 'FIFO did not disable relaxed FIFO.'
         }
     }
+    $sharp = New-SvrSettings
+    Assert ((Get-SvrDisplayArguments $sharp) -contains '--present_effect=fsr') 'Sharpening on did not select FSR.'
+    $sharp.sharpening = $false
+    Assert ((Get-SvrDisplayArguments $sharp) -contains '--present_effect=bilinear') 'Sharpening off did not select bilinear.'
     foreach ($case in @(@('Auto', 'true'), @('Game', 'false'))) {
         $value = New-SvrSettings
         $value.framePacing = $case[0]
@@ -42,6 +46,7 @@ try {
         '{"version":1,"displayMode":"Windowed","windowSize":"1280x720","scale":1,"controller":"Auto","perfCapture":false,"presentation":"Fifo","framePacing":"Even"}' |
             Set-Content -LiteralPath $legacy
         Assert ((Read-SvrSettings $legacy).framePacing -eq 'Auto') 'Saved Even pacing did not load as Automatic.'
+        Assert ((Read-SvrSettings $legacy).sharpening -eq $true) 'Settings without sharpening did not default to on.'
     } finally { Remove-Item -LiteralPath $legacy -ErrorAction SilentlyContinue }
     $bad = New-SvrSettings
     $bad.framePacing = 'Fast'

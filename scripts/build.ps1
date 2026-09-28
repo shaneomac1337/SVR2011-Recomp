@@ -3,7 +3,9 @@ param(
     [ValidateSet('D3D12', 'Vulkan')][string]$Renderer = 'D3D12',
     [string]$VisualStudioRoot = 'C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools',
     [string]$WindowsSdkRoot = 'C:/Program Files (x86)/Windows Kits/10',
-    [ValidateRange(1, 64)][int]$Jobs = 4
+    [ValidateRange(1, 64)][int]$Jobs = 4,
+    # Release drops the profiler and debug-only checks; RelWithDebInfo is what ships today.
+    [ValidateSet('RelWithDebInfo', 'Release')][string]$Configuration = 'RelWithDebInfo'
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/Invoke-Hidden.ps1"
@@ -30,7 +32,7 @@ $env:PATH = "$llvm;$cmakeRoot/Ninja;$($msvc.FullName)/bin/Hostx64/x64;$WindowsSd
 $env:INCLUDE = "$($msvc.FullName)/include;$WindowsSdkRoot/Include/$($windowsVersion.Name)/ucrt;$WindowsSdkRoot/Include/$($windowsVersion.Name)/shared;$WindowsSdkRoot/Include/$($windowsVersion.Name)/um;$WindowsSdkRoot/Include/$($windowsVersion.Name)/winrt"
 $env:LIB = "$($msvc.FullName)/lib/x64;$WindowsSdkRoot/Lib/$($windowsVersion.Name)/ucrt/x64;$WindowsSdkRoot/Lib/$($windowsVersion.Name)/um/x64"
 New-Item -ItemType Directory -Force analysis | Out-Null
-$preset = 'win-amd64-relwithdebinfo'
+$preset = "win-amd64-$($Configuration.ToLowerInvariant())"
 $buildDirectory = "$projectRoot/out/build/$preset"
 $configureArguments = @('--preset', $preset, "-DCMAKE_PREFIX_PATH=$sdk", '-DREXSDK_VERSION=0.10.0')
 $logSuffix = ''
@@ -45,6 +47,9 @@ if ($Renderer -eq 'Vulkan') {
     $configureArguments += "-DPYTHON_EXECUTABLE=$((Get-Command python.exe -ErrorAction Stop).Source)"
     # Match the SDK's Windows x64 preset when compiling it from source.
     $configureArguments += @('-DCMAKE_C_FLAGS=-march=x86-64-v2', '-DCMAKE_CXX_FLAGS=-march=x86-64-v2')
+    # FidelityFX headers enable the runtime's CAS sharpening and FSR 1 upscaling output filters.
+    $fidelityfx = "$projectRoot/.tools/fidelityfx-sdk"
+    if (Test-Path "$fidelityfx/sdk/include") { $configureArguments += "-DREXGLUE_FIDELITYFX_SOURCE_DIR=$fidelityfx" }
     $logSuffix = '-vulkan'
 }
 if ($Action -eq 'Codegen') {
@@ -56,7 +61,7 @@ if ($Action -eq 'Codegen') {
     if ($Renderer -eq 'Vulkan') {
         # The SDK's POST_BUILD copy can be skipped when only a runtime DLL changes.
         . "$PSScriptRoot/Sync-VulkanRuntime.ps1"
-        Sync-VulkanRuntime "$source/out/win-amd64" $buildDirectory
+        Sync-VulkanRuntime "$source/out/win-amd64" $buildDirectory -Configuration $Configuration
     }
 }
 Write-Output "$Action completed. Logs: $projectRoot/analysis/"

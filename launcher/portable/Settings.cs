@@ -18,6 +18,7 @@ namespace Svr2011Launcher
         public bool PerfCapture;
         public string Presentation = "Fifo";
         public string FramePacing = "Auto";
+        public bool Sharpening = true;
 
         static readonly string[] DisplayModes = { "Borderless", "Windowed" };
         static readonly string[] WindowSizes = { "1280x720", "1600x900", "1920x1080" };
@@ -49,6 +50,7 @@ namespace Svr2011Launcher
             settings.Scale = Require<int>(values, "scale");
             settings.Controller = Require<string>(values, "controller");
             settings.PerfCapture = Require<bool>(values, "perfCapture");
+            settings.Sharpening = values.ContainsKey("sharpening") ? Require<bool>(values, "sharpening") : true;
             // Older version-one files predate display synchronization controls.
             settings.Presentation = values.ContainsKey("presentation") ? Require<string>(values, "presentation") : "Fifo";
             settings.FramePacing = values.ContainsKey("framePacing") ? Require<string>(values, "framePacing") : "Auto";
@@ -78,7 +80,8 @@ namespace Svr2011Launcher
             json.AppendLine("  \"controller\": " + serializer.Serialize(Controller) + ",");
             json.AppendLine("  \"perfCapture\": " + (PerfCapture ? "true" : "false") + ",");
             json.AppendLine("  \"presentation\": " + serializer.Serialize(Presentation) + ",");
-            json.AppendLine("  \"framePacing\": " + serializer.Serialize(FramePacing));
+            json.AppendLine("  \"framePacing\": " + serializer.Serialize(FramePacing) + ",");
+            json.AppendLine("  \"sharpening\": " + (Sharpening ? "true" : "false"));
             json.AppendLine("}");
             var directory = Path.GetDirectoryName(Path.GetFullPath(path));
             Directory.CreateDirectory(directory);
@@ -113,6 +116,9 @@ namespace Svr2011Launcher
                 "--vulkan_allow_present_mode_mailbox=" + Lower(Presentation != "Fifo"),
                 "--vulkan_allow_present_mode_fifo_relaxed=" + Lower(Presentation == "Immediate"),
                 "--present_pace_to_guest_vblank=" + Lower(PacesToGuestVblank()),
+                // FSR 1 upscales when the game image is smaller than the screen; otherwise CAS sharpens or downsamples it.
+                "--present_effect=" + (Sharpening ? "fsr" : "bilinear"),
+                "--present_fsr_sharpness_reduction=0.5",
             };
         }
 

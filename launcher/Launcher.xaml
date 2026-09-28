@@ -57,8 +57,10 @@
             <StackPanel Grid.Column="2"><Label Content="_Window size" Target="{Binding ElementName=WindowSize}"/><ComboBox x:Name="WindowSize" AutomationProperties.Name="Window size"><ComboBoxItem Content="1280 × 720" Tag="1280x720"/><ComboBoxItem Content="1600 × 900" Tag="1600x900"/><ComboBoxItem Content="1920 × 1080" Tag="1920x1080"/></ComboBox></StackPanel>
           </Grid>
           <Label Content="_Internal resolution" Target="{Binding ElementName=Scale}" Margin="0,20,0,0"/>
-          <ComboBox x:Name="Scale" AutomationProperties.Name="Internal resolution"><ComboBoxItem Content="1× · Native (recommended)" Tag="1"/><ComboBoxItem Content="2× · Experimental" Tag="2"/><ComboBoxItem Content="3× · Experimental" Tag="3"/></ComboBox>
+          <ComboBox x:Name="Scale" AutomationProperties.Name="Internal resolution"><ComboBoxItem Content="1× · Native (recommended)" Tag="1"/><ComboBoxItem Content="2× · Sharper, stronger GPU" Tag="2"/><ComboBoxItem Content="3× · Sharpest, stronger GPU" Tag="3"/></ComboBox>
           <TextBlock x:Name="ScaleHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0" Text="Changes rendering detail, independently of window size."/>
+          <CheckBox x:Name="Sharpening" Content="Sharpen the image (AMD FSR 1 and CAS)" Margin="0,14,0,0" VerticalContentAlignment="Center"/>
+          <TextBlock Text="Upscales and sharpens the picture to your screen. Costs almost no performance." Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>
           <Label Content="Display _synchronization" Target="{Binding ElementName=Presentation}" Margin="0,20,0,0"/>
           <ComboBox x:Name="Presentation" AutomationProperties.Name="Display synchronization"><ComboBoxItem Content="VSync · Recommended" Tag="Fifo"/><ComboBoxItem Content="Off · Lowest latency, may tear" Tag="Immediate"/><ComboBoxItem Content="Adaptive · Mailbox (test)" Tag="Mailbox"/></ComboBox>
           <TextBlock x:Name="PresentationHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>

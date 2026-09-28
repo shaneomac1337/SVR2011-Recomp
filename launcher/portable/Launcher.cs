@@ -179,7 +179,7 @@ namespace Svr2011Launcher
             foreach (var name in new[] { "BuildLabel", "SetupView", "IsoPath", "Browse", "SetupProgress", "SetupDetail", "SetupStatus",
                 "Install", "PlayView", "SettingsPanel", "DisplayMode", "WindowSize", "Scale", "ScaleHelp", "Presentation",
                 "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs",
-                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings", "FramePacing", "FramePacingHelp" })
+                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings", "FramePacing", "FramePacingHelp", "Sharpening" })
                 ui[name] = (FrameworkElement)Window.FindName(name);
 
             string warning = null;
@@ -195,6 +195,7 @@ namespace Svr2011Launcher
             foreach (var name in new[] { "DisplayMode", "WindowSize", "Scale", "Controller", "Presentation", "FramePacing" })
                 ((ComboBox)ui[name]).SelectionChanged += (s, e) => SetDirty();
             Button("PerfCapture").Click += (s, e) => SetDirty();
+            Button("Sharpening").Click += (s, e) => SetDirty();
             Button("Save").Click += (s, e) => SaveClicked();
             Button("Reset").Click += (s, e) =>
             {
@@ -338,6 +339,7 @@ namespace Svr2011Launcher
             Select(Combo("Presentation"), value.Presentation);
             Select(Combo("FramePacing"), value.FramePacing);
             ((CheckBox)ui["PerfCapture"]).IsChecked = value.PerfCapture;
+            ((CheckBox)ui["Sharpening"]).IsChecked = value.Sharpening;
             UpdateHelp();
             loading = false;
         }
@@ -353,6 +355,7 @@ namespace Svr2011Launcher
                 Presentation = Tag(Combo("Presentation")),
                 FramePacing = Tag(Combo("FramePacing")),
                 PerfCapture = ((CheckBox)ui["PerfCapture"]).IsChecked == true,
+                Sharpening = ((CheckBox)ui["Sharpening"]).IsChecked == true,
             };
         }
 
@@ -360,7 +363,7 @@ namespace Svr2011Launcher
         {
             Combo("WindowSize").IsEnabled = Tag(Combo("DisplayMode")) == "Windowed";
             Text("ScaleHelp").Text = int.Parse(Tag(Combo("Scale"))) > 1
-                ? "Higher detail uses more GPU resources. Check entrances and finishers; return to native if rendering breaks."
+                ? "More detail on models and the arena. Needs a stronger GPU: 3× uses about twice the GPU time of 1×."
                 : "Native rendering is the tested setting. Window size does not change rendering detail.";
             switch (Tag(Combo("Presentation")))
             {

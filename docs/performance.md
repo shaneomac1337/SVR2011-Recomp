@@ -653,3 +653,22 @@ a target has been resolved on at most 8 consecutive frames. Both launchers pass
 at character select and in the ring, with RivaTuner at 60 FPS; the capture
 (`analysis/attire-burst-1`) showed 60 FPS play with single 50 ms frames only at
 the switch into 30 FPS entrances.
+
+## Sharpening with FidelityFX CAS and FSR 1 (2026-09-28)
+
+The final step to the window was plain bilinear filtering: 1x (1280x720) was
+stretched soft, and at 3x a 3840x2160 image went to 2560x1440 through one
+bilinear tap, which skips source pixels instead of averaging them. The
+runtime's CAS and FSR 1 output filters only need the FidelityFX SDK headers
+(their SPIR-V is prebuilt), so the build now passes
+`REXGLUE_FIDELITYFX_SOURCE_DIR` when `.tools/fidelityfx-sdk` holds a sparse
+checkout of `sdk/include` and `ffx-api/include` at the SDK's pinned commit
+(eee08db, MIT). `--present_effect=fsr` upscales with FSR 1 when the game image
+is smaller than the output and falls back to CAS otherwise.
+
+Compared at character select on a 2560x1440 display (`analysis/sharpness-compare.png`):
+FSR 1 at 1x is clearly crisper than bilinear at 31% vs 33% GPU load; 3x with
+CAS is the sharpest, within noise of plain 3x (54-63%). FSR's default sharpness
+looked harsh on skin, so the launchers pass `--present_fsr_sharpness_reduction=0.5`.
+Menu text and 2D art are 720p textures from the disc and look the same at
+every setting. The launchers expose this as "Sharpen the image", on by default.

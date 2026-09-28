@@ -1,6 +1,6 @@
 # Shared, UI-independent settings and argument validation.
 function New-SvrSettings {
-    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Fifo'; framePacing = 'Auto' }
+    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Fifo'; framePacing = 'Auto'; sharpening = $true }
 }
 
 function Test-SvrSettings($Settings) {
@@ -13,6 +13,7 @@ function Test-SvrSettings($Settings) {
     if ($Settings.perfCapture -isnot [bool]) { throw 'Invalid performance capture setting.' }
     if ($Settings.presentation -notin @('Immediate', 'Mailbox', 'Fifo')) { throw 'Invalid display synchronization mode.' }
     if ($Settings.framePacing -notin @('Auto', 'Game', 'Even')) { throw 'Invalid frame pacing mode.' }
+    if ($Settings.sharpening -isnot [bool]) { throw 'Invalid sharpening setting.' }
 }
 
 function Read-SvrSettings([string]$Path) {
@@ -23,6 +24,7 @@ function Read-SvrSettings([string]$Path) {
     if (!$settings.Contains('framePacing')) { $settings.framePacing = 'Auto' }
     # 'Even' was a separate choice until Automatic became even pacing on every monitor.
     if ($settings.framePacing -eq 'Even') { $settings.framePacing = 'Auto' }
+    if (!$settings.Contains('sharpening')) { $settings.sharpening = $true }
     Test-SvrSettings $settings
     return $settings
 }
@@ -55,6 +57,9 @@ function Get-SvrDisplayArguments($Settings) {
     '--vulkan_allow_present_mode_mailbox=' + ($Settings.presentation -ne 'Fifo').ToString().ToLowerInvariant()
     '--vulkan_allow_present_mode_fifo_relaxed=' + ($Settings.presentation -eq 'Immediate').ToString().ToLowerInvariant()
     '--present_pace_to_guest_vblank=' + (Test-SvrPacesToGuestVblank $Settings).ToString().ToLowerInvariant()
+    # FSR 1 upscales when the game image is smaller than the screen; otherwise CAS sharpens or downsamples it.
+    '--present_effect=' + $(if ($Settings.sharpening) { 'fsr' } else { 'bilinear' })
+    '--present_fsr_sharpness_reduction=0.5'
 }
 
 # The game advances a fixed step per frame, so each frame belongs on an even 60 Hz beat. The

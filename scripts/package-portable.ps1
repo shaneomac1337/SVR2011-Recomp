@@ -57,6 +57,8 @@ Set-Content -LiteralPath "$game/version.txt" -Value "Build $version"
 
 Copy-Item -LiteralPath "$projectRoot/third_party/rexglue-LICENSE.txt" -Destination "$game/licenses/rexglue-LICENSE.txt"
 Copy-Item -LiteralPath "$projectRoot/LICENSE" -Destination "$game/licenses/SVR2011-Recomp-LICENSE.txt"
+# CAS and FSR 1 output filters are compiled from the FidelityFX SDK headers.
+Copy-Item -LiteralPath "$projectRoot/.tools/fidelityfx-sdk/LICENSE.txt" -Destination "$game/licenses/FidelityFX-SDK-LICENSE.txt"
 foreach ($directory in Get-ChildItem "$projectRoot/.tools/rexglue-source/thirdparty" -Directory) {
     foreach ($license in Get-ChildItem $directory.FullName -File | Where-Object { $_.Name -match '^(LICENSE|COPYING|LICENCE)' }) {
         Copy-Item -LiteralPath $license.FullName -Destination "$game/licenses/$($directory.Name)-$($license.Name)"
