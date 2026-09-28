@@ -59,6 +59,8 @@ namespace Svr2011Launcher
             arguments.Add("--gpu_allow_invalid_fetch_constants=true");
             // Unseen shaders hold one frame while they build instead of stalling per pipeline.
             arguments.Add("--vulkan_async_skip_placeholder_pipelines=true");
+            // Created attires are baked on the GPU and read by the game on the CPU.
+            arguments.Add("--readback_resolve=burst");
             return arguments;
         }
 

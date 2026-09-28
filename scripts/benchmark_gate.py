@@ -25,6 +25,9 @@ def load(path, column, time_column=None):
     rows, elapsed = [], 0.0
     with path.open(newline="", encoding="utf-8-sig") as stream:
         for row in csv.DictReader(stream):
+            # A capture cut off mid-write ends in a partial row.
+            if not row.get(column) or (time_column and not row.get(time_column)):
+                continue
             interval = int(row[column])
             if time_column:
                 elapsed = int(row[time_column]) / 1e6
@@ -60,16 +63,13 @@ def stats(rows):
 
 
 def half_rate_spans(rows):
-    spans, start, last = [], None, None
+    spans = []
     for end, _ in rows:
-        if start is None or end - last > 1.0:
-            if start is not None:
-                spans.append([round(start, 1), round(last, 1)])
-            start = end
-        last = end
-    if start is not None:
-        spans.append([round(start, 1), round(last, 1)])
-    return spans
+        if spans and end - spans[-1][1] <= 1.0:
+            spans[-1][1] = end
+        else:
+            spans.append([end, end])
+    return [[round(start, 1), round(last, 1)] for start, last in spans]
 
 
 def main():

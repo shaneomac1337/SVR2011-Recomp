@@ -61,6 +61,8 @@ $info.ArgumentList.Add("--render_target_path_vulkan=$RenderTargetPath")
 if ($Experiment -eq 'InvalidFetch') {
     $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
 }
+# Created attires are baked on the GPU and read by the game on the CPU.
+$info.ArgumentList.Add('--readback_resolve=burst')
 foreach ($argument in $ExtraArguments) {
     if ($argument -notmatch '^--[a-z0-9_]+=') { throw "Invalid runtime argument: $argument" }
     $info.ArgumentList.Add($argument)

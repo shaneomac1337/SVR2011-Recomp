@@ -1,7 +1,7 @@
 # Drive a session started with play-vulkan.ps1 -KeyboardInput. Steps are key names (Return, Space,
 # Escape, W/A/S/D, Up/Down/Left/Right) with an optional *count, or wait:<ms>.
 # Example: scripts/send-keys.ps1 'Return*3','wait:1500','Space'
-param([Parameter(Mandatory)][string[]]$Steps, [int]$GapMs = 400)
+param([Parameter(Mandatory)][string[]]$Steps, [int]$GapMs = 400, [int]$HoldMs = 160)
 $ErrorActionPreference = 'Stop'
 if (!('SvrKeys' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -17,7 +17,7 @@ public static class SvrKeys {
     AltTap(); SetForegroundWindow(FindWindow("Shell_TrayWnd", null)); Thread.Sleep(150);
     AltTap(); SetForegroundWindow(w); Thread.Sleep(250);
   }
-  public static void Tap(byte vk) { keybd_event(vk,0,0,UIntPtr.Zero); Thread.Sleep(90); keybd_event(vk,0,2,UIntPtr.Zero); }
+  public static void Tap(byte vk, int holdMs) { keybd_event(vk,0,0,UIntPtr.Zero); Thread.Sleep(holdMs); keybd_event(vk,0,2,UIntPtr.Zero); }
 }
 '@
 }
@@ -33,6 +33,6 @@ try {
         if ($step -notmatch '^(\w+)(?:\*(\d+))?$') { throw "Bad step: $step" }
         $name = $Matches[1]; $count = if ($Matches[2]) { [int]$Matches[2] } else { 1 }
         $vk = if ($codes.ContainsKey($name)) { $codes[$name] } elseif ($name.Length -eq 1) { [int][char]$name.ToUpperInvariant() } else { throw "Unknown key: $name" }
-        for ($i = 0; $i -lt $count; $i++) { [SvrKeys]::Tap([byte]$vk); Start-Sleep -Milliseconds $GapMs }
+        for ($i = 0; $i -lt $count; $i++) { [SvrKeys]::Tap([byte]$vk, $HoldMs); Start-Sleep -Milliseconds $GapMs }
     }
 } finally { [SvrKeys]::Focus($previous) }

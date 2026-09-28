@@ -635,3 +635,21 @@ have a p99 of at most 17.5 ms. Stretches the game runs at 30 FPS are reported
 separately. The first baseline (`analysis/bench-baseline-1`: title, One on One
 with entrances, 3 minutes of play) passed with presents at 60.002 FPS, p99
 16.88 ms and max 18.5 ms.
+
+## Created attires and resolve readback (2026-09-28)
+
+Superstar Threads bakes an edited attire on the GPU in several resolve passes
+and the game then reads the result on the CPU. With the default
+`--readback_resolve=none` the CPU saw stale memory, so edited attires drew
+black with streaks. `some` copied each target back only on its first resolve,
+leaving later bake passes half finished (dark triangles on recoloured trunks);
+`full` was correct but ran entrances at 20 FPS and matches at 30.
+
+A resolve log (`--readback_resolve_log=true`) showed three 3.6 MB targets
+resolved on every frame of play and a handful resolved for only one to three
+frames during the bake. The new `burst` mode reads back synchronously only while
+a target has been resolved on at most 8 consecutive frames. Both launchers pass
+`--readback_resolve=burst`. The tester confirmed edited trunks render correctly
+at character select and in the ring, with RivaTuner at 60 FPS; the capture
+(`analysis/attire-burst-1`) showed 60 FPS play with single 50 ms frames only at
+the switch into 30 FPS entrances.

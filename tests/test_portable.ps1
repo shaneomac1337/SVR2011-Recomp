@@ -35,7 +35,7 @@ try {
         $start = [array]::IndexOf($portable, $expected[0])
         Assert ($start -ge 0) 'Display arguments missing.'
         Assert (($portable[$start..($start + $expected.Count - 1)] -join ' ') -eq ($expected -join ' ')) 'Display arguments differ from the development launcher.'
-        foreach ($required in @('--render_target_path_vulkan=fsi', '--gpu_allow_invalid_fetch_constants=true', '--gpu_plugin=xenos', '--vulkan_async_skip_placeholder_pipelines=true')) {
+        foreach ($required in @('--render_target_path_vulkan=fsi', '--gpu_allow_invalid_fetch_constants=true', '--gpu_plugin=xenos', '--vulkan_async_skip_placeholder_pipelines=true', '--readback_resolve=burst')) {
             Assert ($portable -contains $required) "Missing runtime argument: $required"
         }
         Assert (($portable -like '--perf_log_csv=*').Count -eq [int]$settings.perfCapture) 'Frame capture argument mismatch.'
