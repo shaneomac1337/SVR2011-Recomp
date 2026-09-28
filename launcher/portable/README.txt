@@ -54,10 +54,11 @@ TIPS
 
 WHAT WORKS
 ----------
-Tested: One on One matches, including entrances, finishers and cutscenes.
-Not tested yet: other match types, Create modes, Road to WrestleMania,
-Universe and online. These may crash. If one does, please report it as
-described below.
+Tested: Exhibition matches, including entrances, finishers and cutscenes.
+They usually play without problems.
+Not tested yet: Road to WrestleMania. It can crash at any point, so save
+often. Create modes, Universe and online are untested too.
+If the game crashes, please report it as described below.
 
 
 REPORTING PROBLEMS

@@ -13,12 +13,14 @@ file against that release and refuses anything else.
 
 | | |
 | --- | --- |
-| Tested and playable | One on One matches with entrances, finishers and cutscenes; backstage brawls; menus |
-| Not tested yet | Other match types, Create modes, Road to WrestleMania, Universe, online |
+| Tested and playable | Exhibition matches with entrances, finishers and cutscenes; backstage brawls; menus |
+| Not tested yet | Road to WrestleMania (can crash at any point), Create modes, Universe, online |
 | Tested hardware | Windows 11 with an AMD Radeon RX 7900 XT. Other GPUs and Windows 10 have not been tried. |
 
-The game runs at 60 FPS in the tested modes. Untested modes may crash; an
-[issue](../../issues) with the session log attached helps fix them.
+Exhibition matches usually play without problems at 60 FPS. Road to WrestleMania
+has not been tested and can crash at any point, so save often there. Other
+untested modes may crash too; an [issue](../../issues) with the session log
+attached helps fix them.
 
 ## Play it
 
