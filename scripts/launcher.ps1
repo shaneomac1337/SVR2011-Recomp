@@ -33,8 +33,8 @@ function Update-DisplayHelp {
     } else { 'Native rendering is the validated setting. Window size does not change rendering detail.' }
     $ui.PresentationHelp.Text = switch ($ui.Presentation.SelectedItem.Tag) {
         'Mailbox' { 'Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable. Needs a gameplay check.' }
-        'Fifo' { 'Limits display output to the monitor refresh rate, not necessarily 60 Hz. May add latency; check match smoothness.' }
-        default { 'Keeps the proven presentation mode. Overlay FPS may exceed the actual game update rate.' }
+        'Immediate' { 'Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear.' }
+        default { 'Each frame lands on a display refresh, evenly paced at 60 FPS without tearing. No FPS limiter needed.' }
     }
 }
 function Show-Settings($Value) {

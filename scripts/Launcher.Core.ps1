@@ -1,6 +1,6 @@
 # Shared, UI-independent settings and argument validation.
 function New-SvrSettings {
-    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Immediate' }
+    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Fifo' }
 }
 
 function Test-SvrSettings($Settings) {
@@ -18,7 +18,7 @@ function Read-SvrSettings([string]$Path) {
     if (!(Test-Path -LiteralPath $Path)) { return New-SvrSettings }
     $settings = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
     # Older version-one files predate display synchronization controls.
-    if (!$settings.Contains('presentation')) { $settings.presentation = 'Immediate' }
+    if (!$settings.Contains('presentation')) { $settings.presentation = 'Fifo' }
     Test-SvrSettings $settings
     return $settings
 }

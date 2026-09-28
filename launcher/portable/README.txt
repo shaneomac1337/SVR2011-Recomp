@@ -37,8 +37,9 @@ because it is not code-signed. Choose "More info" and then "Run anyway".
 
 TIPS
 ----
-- Turn off any FPS limiter (for example RivaTuner/RTSS) for this game.
-  The game already runs at its own speed; a limiter makes it stutter.
+- Keep "Display sync" on VSync. The game paces itself to 60 FPS like the
+  console, so no FPS limiter is needed. If you use RivaTuner/RTSS anyway,
+  set its limit to exactly 60 or off; any other value makes it stutter.
 - "1x Native" internal resolution is the tested setting. 2x and 3x look
   sharper but are experimental.
 - The first minutes of play can have short hitches while shaders are

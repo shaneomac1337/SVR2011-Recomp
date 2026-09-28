@@ -19,13 +19,11 @@ inline message and safe defaults without silently overwriting the file.
   Individual devices and player slots are assigned by the runtime; this version
   does not provide per-device assignment or button remapping.
 - Frame capture records guest frame intervals without attaching Tracy.
-- Keep RivaTuner's frame limiter disabled for this game.
-- Display synchronization defaults to Off (recommended).
-  Mailbox requests synchronized presentation, falling back to FIFO if unsupported.
-  Monitor VSync forces FIFO and limits presentation to the monitor refresh rate.
-  These are experimental display options, not arbitrary 60/120 FPS limits, and
-  do not change the guest `vsync` clock. Confirm match smoothness before adopting
-  either. Older settings files load with Off selected.
+- Display sync defaults to VSync (recommended). The runtime holds each guest
+  frame and presents it on the next guest vblank, so frames are evenly spaced
+  at 60 FPS and no external limiter is needed; a RivaTuner limit, if used, must
+  be exactly 60. Off (Immediate) has slightly lower latency but can tear.
+  Mailbox is untested. Settings files without this field load with VSync.
 
 Every launch gets an `analysis/vulkan-play-<timestamp>/` folder with an immutable
 settings snapshot, exact runtime arguments, runtime log and exit result. Startup

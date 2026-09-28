@@ -44,8 +44,10 @@ Steps:
 
 ### If something is off
 
-- **Stutter or uneven speed:** turn off any FPS limiter for this game, such as
-  RivaTuner (RTSS). The game paces itself.
+- **Stutter or uneven speed:** keep *Display sync* on *VSync*. The game paces
+  itself to 60 FPS like the console, so no external limiter is needed. If you
+  use RivaTuner (RTSS) anyway, set its limit to exactly 60 or off; any other
+  value stutters.
 - **Short hitches the first time you see a move or arena:** the game is
   preparing shaders for your graphics card. They are saved in `cache`, so the
   same scene is smooth next time.
@@ -130,6 +132,8 @@ Every play session writes its log, settings and exit result to
    automatically:
    - `rexglue-xmp-no-delay.patch` removes a 10 ms music-player delay that held
      menus and backstage brawls to about 45 FPS
+   - `rexglue-frame-pacing.patch` presents each frame exactly on the game's
+     60 Hz vblank, as the console does, so play is even without a limiter
    - `rexglue-window-restore.patch` fixes a black window after minimizing
    - `rexglue-async-pipelines.patch` adds an optional switch for fewer shader
      hitches, off by default

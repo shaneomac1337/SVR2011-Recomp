@@ -2,7 +2,7 @@
 
 [project]
 name = "svr2011"
-sdk_version = "0.10.0"
+sdk_version = "0.1.0"
 game_root = "assets"
 
 [entrypoint]
@@ -35,3 +35,5 @@ includes = []
 # In-match callback referenced at 0x82035ED0, and the adjacent post-match thunk.
 0x82600EB8 = {}
 0x82600ED0 = {}
+# Four-instruction getter after a tail branch; discovery folds it into sub_8236F100.
+0x8236F120 = {}

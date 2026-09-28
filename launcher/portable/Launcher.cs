@@ -307,8 +307,8 @@ namespace Svr2011Launcher
             switch (Tag(Combo("Presentation")))
             {
                 case "Mailbox": Text("PresentationHelp").Text = "Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable."; break;
-                case "Fifo": Text("PresentationHelp").Text = "Limits display output to the monitor refresh rate. May add input latency."; break;
-                default: Text("PresentationHelp").Text = "The tested setting. An FPS overlay may show more than the game's real update rate."; break;
+                case "Immediate": Text("PresentationHelp").Text = "Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear."; break;
+                default: Text("PresentationHelp").Text = "Each frame lands on a display refresh, evenly paced at 60 FPS without tearing. No FPS limiter needed."; break;
             }
         }
 

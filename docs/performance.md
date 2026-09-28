@@ -541,3 +541,36 @@ smooth in testing (`vulkan-play-20260928-075634-047`).
 
 `play-vulkan.ps1 -ExtraArguments '--cvar=value'` passes additional runtime flags for
 experiments like these.
+
+## Frame pacing at 60 FPS (2026-09-28)
+
+A RivaTuner 60 FPS cap stuttered, and play without it was not perfectly even.
+Guest frames averaged exactly 16.666 ms but individual swaps landed 13–21 ms
+apart (1.45 ms standard deviation, `vulkan-play-20260928-075634-047`). The
+runtime presented each swap immediately, so that jitter reached the screen; the
+console only flips at vblank. A second 60 FPS clock (RivaTuner) then decided per
+frame whether to show it now or a whole frame later.
+
+`patches/rexglue-frame-pacing.patch` makes three changes:
+
+- The guest vblank clock sleeps on a high-resolution waitable timer instead of
+  polling with `Sleep(1)`. An earlier version added a short spin on this thread;
+  menus and matches then fell to 30–45 FPS (`vulkan-play-20260928-094258-241`).
+  This thread must not spin.
+- A dedicated presentation thread holds each guest frame and presents it on the
+  predicted ideal vblank time, waking 1 ms early and spinning the rest. Guest
+  frames arrive 0.7–1.5 ms after each tick, so presenting 1 ms after the tick
+  collided with them (50–57 FPS, `vulkan-play-20260928-100255-396`); presenting
+  on the tick does not. `--present_pace_to_guest_vblank=false` restores
+  immediate presentation, and `--present_pacing_stats=true` logs intervals,
+  empty vblanks, replaced frames and host presents every 5 seconds.
+- The achievement toast overlay is registered only while a toast is queued. Any
+  registered overlay made the window thread repaint at the monitor refresh rate
+  (360 Hz on the test PC) after the first input event, which also explained the
+  342 FPS RivaTuner reading.
+
+With VSync on the 360 Hz test display (`vulkan-play-20260928-100512-522`): 301
+presents per 5 seconds, 0.10–0.15 ms interval standard deviation, no empty
+vblanks and no replaced frames. The tester reported it as extremely smooth
+without a limiter. Entrances render at 30 FPS in the game itself and are paced
+evenly at that rate. The launchers now default to VSync.

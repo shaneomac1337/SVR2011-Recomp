@@ -16,7 +16,7 @@ namespace Svr2011Launcher
         public int Scale = 1;
         public string Controller = "Auto";
         public bool PerfCapture;
-        public string Presentation = "Immediate";
+        public string Presentation = "Fifo";
 
         static readonly string[] DisplayModes = { "Borderless", "Windowed" };
         static readonly string[] WindowSizes = { "1280x720", "1600x900", "1920x1080" };
@@ -47,7 +47,7 @@ namespace Svr2011Launcher
             settings.Controller = Require<string>(values, "controller");
             settings.PerfCapture = Require<bool>(values, "perfCapture");
             // Older version-one files predate display synchronization controls.
-            settings.Presentation = values.ContainsKey("presentation") ? Require<string>(values, "presentation") : "Immediate";
+            settings.Presentation = values.ContainsKey("presentation") ? Require<string>(values, "presentation") : "Fifo";
             settings.Validate();
             return settings;
         }

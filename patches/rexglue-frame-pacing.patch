@@ -1,0 +1,458 @@
+diff --git a/include/rex/thread.h b/include/rex/thread.h
+index 30b207d..841fd5e 100644
+--- a/include/rex/thread.h
++++ b/include/rex/thread.h
+@@ -113,6 +113,8 @@ void SyncMemory();
+ 
+ // Sleeps the current thread for at least as long as the given duration.
+ void Sleep(std::chrono::microseconds duration);
++// Sub-millisecond sleep; Sleep rounds to whole milliseconds on Windows.
++void PreciseSleep(std::chrono::microseconds duration);
+ template <typename Rep, typename Period>
+ void Sleep(std::chrono::duration<Rep, Period> duration) {
+   Sleep(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+index afb4a30..ee1016f 100644
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -13,6 +13,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <climits>
+ #include <cmath>
+ #include <condition_variable>
+@@ -358,6 +359,12 @@ class Presenter {
+   bool RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuffer_height,
+                           uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
+                           std::function<bool(GuestOutputRefreshContext& context)> refresher);
++  // Called on each guest vblank with the tick's ideal time. With present_pace_to_guest_vblank,
++  // refreshed guest output is presented at the next vblank instead of immediately, like the
++  // console's display flip.
++  void OnGuestVblank(std::chrono::steady_clock::time_point vblank_time);
++  // Stops the pacing thread; call after guest vblanks and refreshes have stopped.
++  void StopGuestOutputPacing();
+   // The implementation must be callable from any thread, including from
+   // multiple at the same time, and it should acquire the latest guest output
+   // image via ConsumeGuestOutput.
+@@ -845,6 +852,10 @@ class Presenter {
+   // has been successfully sent to the OS presentation at least.
+   PaintResult PaintAndPresent(bool execute_ui_drawers);
+ 
++  // Paints the latest guest output, or requests a UI thread paint, per the current paint mode.
++  void PresentLatestGuestOutput();
++  void GuestOutputPacingThread();
++
+   void HandleUIDrawersChangeFromUIThread(bool drawers_were_empty);
+ 
+   bool AreUITicksNeededFromUIThread() const {
+@@ -1051,6 +1062,19 @@ class Presenter {
+ 
+   std::thread dxgi_ui_tick_thread_;
+ #endif  // XE_PLATFORM
++
++  std::mutex guest_output_pacing_mutex_;
++  std::condition_variable guest_output_pacing_condition_;
++  std::thread guest_output_pacing_thread_;
++  uint64_t guest_output_pacing_vblank_count_ = 0;
++  std::chrono::steady_clock::time_point guest_output_pacing_vblank_time_{};
++  std::chrono::steady_clock::duration guest_output_pacing_vblank_period_{};
++  bool guest_output_pacing_shutdown_ = false;
++  std::atomic<bool> guest_output_paced_frame_pending_{false};
++  std::atomic<uint32_t> guest_output_paced_frames_replaced_{0};
++  std::atomic<uint32_t> host_presents_{0};
++  // Window-thread paints by trigger: forced by the window, UI drawers, requested, outdated.
++  std::array<std::atomic<uint32_t>, 4> ui_paints_{};
+ };
+ 
+ }  // namespace ui
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 9ac8d15..3af1e89 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -207,6 +207,10 @@ void Sleep(std::chrono::microseconds duration) {
+ }
+ 
+ // TODO(bwrsandman) Implement by allowing alert interrupts from IO operations
++void PreciseSleep(std::chrono::microseconds duration) {
++  Sleep(duration);
++}
++
+ thread_local bool alertable_state_ = false;
+ bool DispatchCurrentThreadUserCallback();
+ SleepResult AlertableSleep(std::chrono::microseconds duration) {
+diff --git a/src/core/threading_win.cpp b/src/core/threading_win.cpp
+index 896dfec..9e8537a 100644
+--- a/src/core/threading_win.cpp
++++ b/src/core/threading_win.cpp
+@@ -101,6 +101,29 @@ void Sleep(std::chrono::microseconds duration) {
+   }
+ }
+ 
++void PreciseSleep(std::chrono::microseconds duration) {
++  struct HighResolutionTimer {
++    HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                           TIMER_ALL_ACCESS);
++    ~HighResolutionTimer() {
++      if (handle) {
++        CloseHandle(handle);
++      }
++    }
++  };
++  thread_local HighResolutionTimer timer;
++  if (duration.count() <= 0) {
++    return;
++  }
++  LARGE_INTEGER due_time;
++  due_time.QuadPart = -int64_t(duration.count()) * 10;
++  if (!timer.handle || !SetWaitableTimer(timer.handle, &due_time, 0, nullptr, nullptr, FALSE)) {
++    Sleep(duration);
++    return;
++  }
++  WaitForSingleObject(timer.handle, INFINITE);
++}
++
+ SleepResult AlertableSleep(std::chrono::microseconds duration) {
+   if (SleepEx(static_cast<DWORD>(duration.count() / 1000), TRUE) == WAIT_IO_COMPLETION) {
+     return SleepResult::kAlerted;
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..85a5e40 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include <algorithm>
+ #include <cctype>
++#include <chrono>
+ #include <cstdint>
+ #include <functional>
+ #include <memory>
+@@ -159,14 +160,29 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+         uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
+         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
+         while (vsync_worker_running_) {
+-          uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+           uint64_t interval_ticks =
+               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
++          uint64_t deadline = last_frame_time + interval_ticks;
++          // Wake on the tick with a high-resolution timer instead of polling with Sleep(1).
++          // Do not spin: this thread can share a core with a pinned guest thread.
++          int64_t remaining_us = int64_t(deadline - chrono::Clock::QueryGuestTickCount()) *
++                                 1000000 / int64_t(guest_tick_frequency);
++          if (remaining_us > 0) {
++            rex::thread::PreciseSleep(std::chrono::microseconds(remaining_us));
++          }
++          if (presenter_) {
++            // Report when the tick was due, not when this thread woke up.
++            int64_t late_ticks = int64_t(chrono::Clock::QueryGuestTickCount() - deadline);
++            presenter_->OnGuestVblank(
++                std::chrono::steady_clock::now() -
++                std::chrono::nanoseconds(std::max<int64_t>(late_ticks, 0) * 1000000000 /
++                                         int64_t(guest_tick_frequency)));
++          }
++          uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+           while (current_time - last_frame_time >= interval_ticks) {
+             MarkVblank();
+             last_frame_time += interval_ticks;
+           }
+-          rex::thread::Sleep(std::chrono::milliseconds(1));
+         }
+         return 0;
+       }));
+@@ -189,6 +205,9 @@ void GraphicsSystem::Shutdown() {
+     vsync_worker_thread_->Wait(0, 0, 0, nullptr);
+     vsync_worker_thread_.reset();
+   }
++  if (presenter_) {
++    presenter_->StopGuestOutputPacing();
++  }
+ 
+   if (presenter_) {
+     if (app_context_) {
+diff --git a/src/ui/overlay/achievement_toast.cpp b/src/ui/overlay/achievement_toast.cpp
+index 53b8c0b..a07e12d 100644
+--- a/src/ui/overlay/achievement_toast.cpp
++++ b/src/ui/overlay/achievement_toast.cpp
+@@ -20,7 +20,11 @@ namespace rex::ui {
+ AchievementToastDialog::AchievementToastDialog(ImGuiDrawer* drawer,
+                                                ImmediateDrawer* immediate_drawer,
+                                                rex::Runtime* runtime)
+-    : AchievementNotificationDialog(drawer), icon_cache_(immediate_drawer, runtime) {}
++    : AchievementNotificationDialog(drawer), icon_cache_(immediate_drawer, runtime) {
++  // Registered only while a toast is queued: any registered dialog makes the presenter
++  // repaint on the UI thread at the monitor refresh rate instead of pacing guest frames.
++  drawer->RemoveDialog(this);
++}
+ 
+ AchievementToastDialog::~AchievementToastDialog() {}
+ 
+@@ -48,6 +52,7 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
+       }
+     }
+     if (queue_.empty()) {
++      imgui_drawer()->RemoveDialog(this);
+       return;
+     }
+     toast = queue_.front();
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..bd614c3 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -12,12 +12,15 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <cctype>
++#include <chrono>
++#include <cmath>
+ #include <utility>
+ 
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/platform.h>
++#include <rex/thread.h>
+ #include <rex/ui/presenter.h>
+ #include <rex/ui/window.h>
+ 
+@@ -85,6 +88,14 @@ REXCVAR_DEFINE_BOOL(present_allow_overscan_cutoff, false, "UI/Presenter",
+                     "Allow overscan cutoff based on safe area settings")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++REXCVAR_DEFINE_BOOL(present_pace_to_guest_vblank, true, "UI/Presenter",
++                    "Present each guest frame at the next guest vblank, as the console does, "
++                    "instead of as soon as it is submitted")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_BOOL(present_pacing_stats, false, "UI/Presenter",
++                    "Log paced presentation intervals, repeated vblanks and replaced frames "
++                    "every 5 seconds");
++
+ namespace {
+ using GuestOutputPaintConfig = rex::ui::Presenter::GuestOutputPaintConfig;
+ 
+@@ -286,6 +297,7 @@ Presenter::~Presenter() {
+   // No intrusive lifetime management must be performed from UI drawers - defer
+   // it if needed.
+   assert_false(is_executing_ui_drawers_);
++  StopGuestOutputPacing();
+ 
+ #if REX_PLATFORM_WIN32
+   if (dxgi_ui_tick_thread_.joinable()) {
+@@ -446,9 +458,16 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+   // Reset ui_thread_paint_requested_ unconditionally also, regardless of
+   // whether the UI needs to be drawn - the flag may be set to try reconnecting,
+   // for example.
+-  if (ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed)) {
++  bool paint_requested = ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed);
++  if (paint_requested) {
+     do_paint = true;
+   }
++  if (do_paint) {
++    ui_paints_[force_paint ? 0 : draw_ui ? 1 : 2].fetch_add(1, std::memory_order_relaxed);
++    if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated) {
++      ui_paints_[3].fetch_add(1, std::memory_order_relaxed);
++    }
++  }
+   PaintResult paint_result = PaintResult::kNotPresented;
+   bool request_repaint_at_tick = false;
+   bool request_repaint_immediately = false;
+@@ -613,6 +632,143 @@ bool Presenter::RefreshGuestOutput(
+     guest_output_mailbox_writable_ = (3 - last_acquired - guest_output_mailbox_writable_) % 3;
+   }
+ 
++  if (REXCVAR_GET(present_pace_to_guest_vblank)) {
++    {
++      std::lock_guard<std::mutex> lock(guest_output_pacing_mutex_);
++      if (!guest_output_pacing_thread_.joinable() && !guest_output_pacing_shutdown_) {
++        guest_output_pacing_thread_ = std::thread([this]() { GuestOutputPacingThread(); });
++      }
++    }
++    if (guest_output_paced_frame_pending_.exchange(true, std::memory_order_acq_rel)) {
++      guest_output_paced_frames_replaced_.fetch_add(1, std::memory_order_relaxed);
++    }
++    return is_active;
++  }
++  PresentLatestGuestOutput();
++  return is_active;
++}
++
++void Presenter::OnGuestVblank(std::chrono::steady_clock::time_point vblank_time) {
++  {
++    std::lock_guard<std::mutex> lock(guest_output_pacing_mutex_);
++    if (!guest_output_pacing_thread_.joinable()) {
++      return;
++    }
++    if (guest_output_pacing_vblank_count_++) {
++      auto period = vblank_time - guest_output_pacing_vblank_time_;
++      auto& current = guest_output_pacing_vblank_period_;
++      // Ignore gaps from missed ticks; a real rate change moves by less than half a period.
++      if (current <= decltype(period)::zero() || (period > current / 2 && period < current * 3 / 2)) {
++        current = period;
++      }
++    }
++    guest_output_pacing_vblank_time_ = vblank_time;
++  }
++  guest_output_pacing_condition_.notify_one();
++}
++
++void Presenter::StopGuestOutputPacing() {
++  std::thread thread;
++  {
++    std::lock_guard<std::mutex> lock(guest_output_pacing_mutex_);
++    guest_output_pacing_shutdown_ = true;
++    thread = std::move(guest_output_pacing_thread_);
++  }
++  guest_output_pacing_condition_.notify_one();
++  if (thread.joinable()) {
++    thread.join();
++  }
++}
++
++void Presenter::GuestOutputPacingThread() {
++  rex::thread::set_current_thread_name("Guest Output Pacing");
++  using Clock = std::chrono::steady_clock;
++  // Guest frames arrive shortly after each vblank, so present exactly on the tick: wake ahead
++  // of the predicted tick and spin the last stretch. Waking on the vblank signal instead lands
++  // up to ~0.7 ms late and varies. This is not a guest thread, so spinning here does not take
++  // time from pinned guest cores.
++  constexpr auto kWakeAhead = std::chrono::microseconds(1000);
++  Clock::time_point last_target{};
++  Clock::time_point last_present{}, window_start = Clock::now();
++  uint32_t presents = 0, repeated_vblanks = 0;
++  double interval_sum_ms = 0.0, interval_square_sum_ms = 0.0, interval_max_ms = 0.0;
++  while (true) {
++    Clock::time_point vblank_time;
++    Clock::duration period;
++    {
++      std::unique_lock<std::mutex> lock(guest_output_pacing_mutex_);
++      guest_output_pacing_condition_.wait(lock, [&]() {
++        return guest_output_pacing_shutdown_ || guest_output_pacing_vblank_count_ >= 2;
++      });
++      if (guest_output_pacing_shutdown_) {
++        return;
++      }
++      vblank_time = guest_output_pacing_vblank_time_;
++      period = guest_output_pacing_vblank_period_;
++    }
++    if (period <= Clock::duration::zero()) {
++      continue;
++    }
++    // The next tick after the last one presented, anchored to the latest ideal vblank time.
++    Clock::time_point target = vblank_time + period;
++    while (target <= last_target + period / 2) {
++      target += period;
++    }
++    Clock::time_point now = Clock::now();
++    if (target - now > period * 2) {
++      // The guest clock stalled or jumped; resynchronize on the next signal.
++      last_target = Clock::time_point{};
++      rex::thread::PreciseSleep(std::chrono::microseconds(1000));
++      continue;
++    }
++    if (target - now > kWakeAhead) {
++      rex::thread::PreciseSleep(
++          std::chrono::duration_cast<std::chrono::microseconds>(target - now - kWakeAhead));
++    }
++    while (Clock::now() < target) {
++      std::this_thread::yield();
++    }
++    last_target = target;
++    if (!guest_output_paced_frame_pending_.exchange(false, std::memory_order_acq_rel)) {
++      ++repeated_vblanks;
++      continue;
++    }
++    PresentLatestGuestOutput();
++    if (!REXCVAR_GET(present_pacing_stats)) {
++      continue;
++    }
++    now = Clock::now();
++    if (last_present != Clock::time_point{}) {
++      double interval_ms = std::chrono::duration<double, std::milli>(now - last_present).count();
++      interval_sum_ms += interval_ms;
++      interval_square_sum_ms += interval_ms * interval_ms;
++      interval_max_ms = std::max(interval_max_ms, interval_ms);
++      ++presents;
++    }
++    last_present = now;
++    if (now - window_start >= std::chrono::seconds(5) && presents) {
++      double mean_ms = interval_sum_ms / presents;
++      double stdev_ms =
++          std::sqrt(std::max(0.0, interval_square_sum_ms / presents - mean_ms * mean_ms));
++      REXLOG_INFO(
++          "Paced presentation 5s: {} frames, interval {:.3f} ms mean, {:.3f} ms stdev, "
++          "{:.3f} ms max; {} vblanks without a new frame, {} frames replaced before display, "
++          "{} host presents; window paints: {} forced, {} UI, {} requested, {} outdated",
++          presents, mean_ms, stdev_ms, interval_max_ms, repeated_vblanks,
++          guest_output_paced_frames_replaced_.exchange(0, std::memory_order_relaxed),
++          host_presents_.exchange(0, std::memory_order_relaxed),
++          ui_paints_[0].exchange(0, std::memory_order_relaxed),
++          ui_paints_[1].exchange(0, std::memory_order_relaxed),
++          ui_paints_[2].exchange(0, std::memory_order_relaxed),
++          ui_paints_[3].exchange(0, std::memory_order_relaxed));
++      presents = repeated_vblanks = 0;
++      interval_sum_ms = interval_square_sum_ms = interval_max_ms = 0.0;
++      window_start = now;
++    }
++  }
++}
++
++void Presenter::PresentLatestGuestOutput() {
+   // Trigger the presentation on the host.
+   PaintResult paint_result = PaintResult::kNotPresented;
+   {
+@@ -645,8 +801,6 @@ bool Presenter::RefreshGuestOutput(
+       host_gpu_loss_callback_(false, false);
+     }
+   }
+-
+-  return is_active;
+ }
+ 
+ void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConfig& new_config) {
+@@ -1313,9 +1467,10 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
+   if (!REXCVAR_GET(host_present_from_non_ui_thread)) {
+     return PaintMode::kUIThreadOnRequest;
+   }
+-  if (surface_paint_connection_has_implicit_vsync_) {
++  if (surface_paint_connection_has_implicit_vsync_ &&
++      !REXCVAR_GET(present_pace_to_guest_vblank)) {
+     // Don't be causing host vertical sync CPU waits in the thread generating
+-    // the guest output.
++    // the guest output. The pacing thread is dedicated, so it may wait.
+     return PaintMode::kUIThreadOnRequest;
+   }
+   if (!ui_drawers_.empty()) {
+@@ -1498,6 +1653,9 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
+   assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
+   assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
+   PaintResult result = PaintAndPresentImpl(execute_ui_drawers);
++  if (result == PaintResult::kPresented || result == PaintResult::kPresentedSuboptimal) {
++    host_presents_.fetch_add(1, std::memory_order_relaxed);
++  }
+   switch (result) {
+     case PaintResult::kPresented:
+       surface_paint_connection_was_optimal_at_successful_paint_ = true;
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b94fe9e..e799143 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -439,10 +439,18 @@ void ReXApp::LaunchModule() {
+     if (achievement_notification_ && achievement_notification_listener_ == 0 && runtime_ &&
+         runtime_->kernel_state()) {
+       std::weak_ptr<ui::AchievementNotificationDialog> notification = achievement_notification_;
++      auto* context = &app_context();
++      auto* drawer = imgui_drawer_.get();
+       achievement_notification_listener_ = achievements().RegisterNotificationCallback(
+-          [notification](const rex::system::AchievementEvent& event) {
++          [notification, context, drawer](const rex::system::AchievementEvent& event) {
+             if (auto dialog = notification.lock()) {
+               dialog->Push(event);
++              // The toast registers itself only while it has something to show.
++              context->CallInUIThread([notification, drawer]() {
++                if (auto shown = notification.lock()) {
++                  drawer->AddDialog(shown.get());
++                }
++              });
+             }
+           });
+     }

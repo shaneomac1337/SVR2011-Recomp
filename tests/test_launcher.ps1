@@ -35,7 +35,7 @@ try {
     $old = New-SvrSettings
     $old.Remove('presentation')
     $old | ConvertTo-Json | Set-Content -LiteralPath $path
-    Assert ((Read-SvrSettings $path).presentation -eq 'Immediate') 'Old settings did not migrate safely.'
+    Assert ((Read-SvrSettings $path).presentation -eq 'Fifo') 'Old settings did not migrate to the default.'
     Save-SvrSettings $path $loaded
     foreach ($field in @('scale','windowSize','controller','displayMode','perfCapture','version','presentation')) {
         $invalid = New-SvrSettings
