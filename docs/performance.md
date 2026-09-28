@@ -489,3 +489,26 @@ cold pipelines, with and without the switch, compared over the entrance/match-st
 window (count of >50 ms intervals, max), plus a visual check that shadows and
 effects appear normally once compiled. Without the switch, hitches should still
 fade as the FSI storage fills.
+
+## Backstage brawl frame pacing (2026-09-28)
+
+Backstage brawls ran at 43–46 guest FPS while matches held 60. The frame intervals were
+bimodal, ~16.7 ms and ~33 ms (`analysis/vulkan-play-20260928-073701-481/perf.csv`).
+That is a 60 FPS loop missing vblank, not a 30 FPS target. RPCS3 reports for the PS3
+version describe 60 FPS backstage. The FBO render-target path showed the same pattern
+(`vulkan-play-20260928-073957-347`), so FSI was not the cause. A 1 ms
+`timeBeginPeriod` request changed nothing: guest `Sleep(1)` already averaged 1.08 ms.
+
+No thread was CPU-bound; the busiest used under 10% of a core. The Tracy timeline
+(`profile-20260928-074549`) showed the frame gated by a chain of waits. A worker
+thread called `XMsgInProcessCall` twice per frame at ~10.6 ms each. The main thread's
+sleeps and the GPU thread's once-per-frame `WAIT_REG_MEM` on guest memory `0x1353D004`
+ended at the same instants. The call is `XMPGetPlaybackController`. The SDK's XMP app
+sleeps 10 ms whenever it is called off the main thread, a workaround for another title
+that polls it in a tight loop; `XMPGetStatus` similarly sleeps 1 ms.
+`patches/rexglue-xmp-no-delay.patch` replaces both sleeps with a yield. With it, the
+GPU thread completes 300 frame handshakes per 5 s (60 FPS) backstage, and the user
+confirmed smooth play (`vulkan-play-20260928-075634-047`).
+
+`play-vulkan.ps1 -ExtraArguments '--cvar=value'` passes additional runtime flags for
+experiments like these.

@@ -9,7 +9,9 @@ param(
     [ValidateSet('fbo', 'fsi')][string]$RenderTargetPath = 'fsi',
     [string]$SettingsPath,
     [string]$RunDirectory,
-    [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch'
+    [ValidateSet('Baseline', 'InvalidFetch')][string]$Experiment = 'InvalidFetch',
+    # Extra runtime cvars for experiments, for example '--gpu_wait_reg_mem_stats=true'.
+    [string[]]$ExtraArguments = @()
 )
 $ErrorActionPreference = 'Stop'
 $sessionMutex = [Threading.Mutex]::new($false, 'Local\SVR2011-Vulkan-Game')
@@ -53,6 +55,10 @@ if ($SkipPlaceholderPipelines) { $info.ArgumentList.Add('--vulkan_async_skip_pla
 $info.ArgumentList.Add("--render_target_path_vulkan=$RenderTargetPath")
 if ($Experiment -eq 'InvalidFetch') {
     $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
+}
+foreach ($argument in $ExtraArguments) {
+    if ($argument -notmatch '^--[a-z0-9_]+=') { throw "Invalid runtime argument: $argument" }
+    $info.ArgumentList.Add($argument)
 }
 $runtimeHashes = [ordered]@{}
 foreach ($name in @('svr2011.exe','rexruntimerd.dll','rexgpu-xenosrd.dll','TracyClientrd.dll')) {
