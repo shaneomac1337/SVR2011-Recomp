@@ -672,3 +672,18 @@ CAS is the sharpest, within noise of plain 3x (54-63%). FSR's default sharpness
 looked harsh on skin, so the launchers pass `--present_fsr_sharpness_reduction=0.5`.
 Menu text and 2D art are 720p textures from the disc and look the same at
 every setting. The launchers expose this as "Sharpen the image", on by default.
+
+## Finisher and signature hitches from resolve readback (2026-09-28)
+
+With `readback_resolve=burst` blocking for up to 8 consecutive frames, signature
+and finisher effects (a screen-sized 3.6 MB target and two 240 KB bloom targets)
+turned 8 frames each into 33 ms (`analysis/hitch-20260928-184418`, found with
+`scripts/hitch-session.ps1`, `mark.ps1` and `analyze_hitches.py`). Blocking only
+on a target's first frame in a run left single 33 ms frames (24 in one match,
+`analysis/hitch-20260928-185516`). Burst readback no longer waits at all: each
+copy is queued and written to guest memory once its GPU submission completes,
+checked at every copy, swap and frame start. It waits only when both copy slots
+of one target are still in flight. The next match had 4 slow frames: two 50 ms
+frames during the attire bake at 30 FPS character select (slot reuse) and two
+with no GPU event, one of them the first finisher (27 ms, likely first-time asset
+loading). The tester's edited attire still rendered correctly.

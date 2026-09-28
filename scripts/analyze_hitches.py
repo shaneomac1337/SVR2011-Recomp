@@ -19,6 +19,7 @@ EVENTS = {
     "Creating graphics pipeline": "pipeline build",
     "Frame event: present skipped": "present skipped (pipeline building)",
     "Frame event: blocking resolve readback": "blocking readback",
+    "Frame event: deferred resolve readback": "deferred readback (no wait)",
 }
 
 

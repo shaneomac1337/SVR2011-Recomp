@@ -1,22 +1,22 @@
 diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
-index da8e432..4a7ba22 100644
+index da8e432..7fb4524 100644
 --- a/include/rex/graphics/command_processor.h
 +++ b/include/rex/graphics/command_processor.h
 @@ -44,6 +44,9 @@ enum class ReadbackResolveMode {
    kFast,
    kSome,
    kFull,
-+  // Immediate readback only while a target has been resolved on few consecutive frames, so
++  // Immediate readback only for a target's first resolve in a run of consecutive frames, so
 +  // one-off render-to-texture results stay exact and per-frame targets cost nothing.
 +  kBurst,
  };
  
  struct SwapState {
 diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
-index 696ff48..502ff89 100644
+index 696ff48..52fa385 100644
 --- a/include/rex/graphics/vulkan/command_processor.h
 +++ b/include/rex/graphics/vulkan/command_processor.h
-@@ -452,7 +452,11 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -452,7 +452,25 @@ class VulkanCommandProcessor : public CommandProcessor {
      uint32_t written_size[2] = {0, 0};
      uint32_t current_index = 0;
      uint64_t last_used_frame = 0;
@@ -24,12 +24,26 @@ index 696ff48..502ff89 100644
 +    uint32_t frame_streak = 0;
    };
 +  // Beyond this many consecutive frames a target counts as per-frame and is not read back.
-+  static constexpr uint32_t kReadbackBurstFrames = 8;
++  // Created-attire bakes resolve each texture on isolated frames; finisher effects and menu
++  // tiles resolve the same target on 8+ frames in a row, and syncing on each doubled its frame.
++  static constexpr uint32_t kReadbackBurstFrames = 1;
++  // Burst-mode resolve copies that are written to guest memory once their submission completes,
++  // so no frame waits on the GPU for them.
++  struct PendingResolveReadback {
++    uint64_t key;
++    uint32_t index;
++    uint64_t submission;
++    uint32_t address;
++    uint32_t length;
++  };
++  std::deque<PendingResolveReadback> pending_resolve_readbacks_;
++  // Writes every completed pending resolve copy to guest memory; with wait, finishes all first.
++  void DeliverResolveReadbacks(bool wait);
    void EvictOldReadbackBuffers(std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map);
    static constexpr uint32_t kReadbackBufferSizeIncrement = 16 * 1024 * 1024;
    static constexpr size_t kMaxReadbackBuffers = 256;
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..01ce5fc 100644
+index a744375..24fe248 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -50,8 +50,10 @@ REXCVAR_DEFINE_STRING(readback_resolve, "none", "GPU",
@@ -39,8 +53,8 @@ index a744375..01ce5fc 100644
 -                      " full: Immediate sync readback (accurate but stalls)")
 -    .allowed({"none", "fast", "some", "full"})
 +                      " full: Immediate sync readback (accurate but stalls)\n"
-+                      " burst: Immediate sync readback while a target has been resolved on few\n"
-+                      "        consecutive frames; none for targets resolved every frame")
++                      " burst: Immediate sync readback for a target's first resolve in a run of\n"
++                      "        consecutive frames; none for the rest of the run")
 +    .allowed({"none", "fast", "some", "full", "burst"})
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
  
@@ -56,7 +70,7 @@ index a744375..01ce5fc 100644
  }
  
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..e53c3b7 100644
+index 001f36b..b466240 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -55,6 +55,15 @@ REXCVAR_DEFINE_BOOL(vulkan_readback_memexport, false, "GPU/Vulkan",
@@ -75,7 +89,15 @@ index 001f36b..e53c3b7 100644
  REXCVAR_DEFINE_BOOL(vulkan_async_skip_incomplete_frames, true, "GPU/Vulkan",
                      "When async shader compilation is enabled, skip presenting frames that "
                      "used placeholder pipelines to avoid visible flashing")
-@@ -2293,6 +2302,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2277,6 +2286,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+ 
+   if (!graphics_system_)
+     return;
++  DeliverResolveReadbacks(false);
+   ui::Presenter* presenter = graphics_system_->presenter();
+   if (!presenter) {
+     REXGPU_ERROR("XELOG_GPU PRESENT: NO PRESENTER");
+@@ -2293,6 +2303,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                                              REXCVAR_GET(vulkan_async_skip_incomplete_frames) &&
                                              frame_used_async_placeholder_pipeline_;
    if (skip_present_due_async_placeholder) {
@@ -86,7 +108,16 @@ index 001f36b..e53c3b7 100644
      static bool skipped_incomplete_frame_logged = false;
      if (!skipped_incomplete_frame_logged) {
        skipped_incomplete_frame_logged = true;
-@@ -4393,8 +4406,13 @@ bool VulkanCommandProcessor::IssueCopy() {
+@@ -4303,6 +4317,8 @@ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_
+         dfn.vkFreeMemory(device, new_memory, nullptr);
+         return false;
+       }
++      // Pending resolve copies may still point at the buffer about to be destroyed.
++      DeliverResolveReadbacks(false);
+       if (readback.mapped_data[index] != nullptr && readback.memories[index] != VK_NULL_HANDLE) {
+         dfn.vkUnmapMemory(device, readback.memories[index]);
+       }
+@@ -4393,8 +4409,13 @@ bool VulkanCommandProcessor::IssueCopy() {
    ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
    if (readback_mode == ReadbackResolveMode::kDisabled) {
      uint32_t written_address, written_length;
@@ -102,7 +133,7 @@ index 001f36b..e53c3b7 100644
    }
  
    return IssueCopy_ReadbackResolvePath();
-@@ -4414,6 +4432,10 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -4414,6 +4435,10 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
    if (!written_length) {
      return true;
    }
@@ -113,7 +144,16 @@ index 001f36b..e53c3b7 100644
  
    if (!memory_->TranslatePhysical(written_address)) {
      return true;
-@@ -4475,7 +4497,23 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+@@ -4454,6 +4479,8 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+         dfn.vkFreeMemory(device, new_memory, nullptr);
+         return false;
+       }
++      // Pending resolve copies may still point at the buffer about to be destroyed.
++      DeliverResolveReadbacks(false);
+       if (readback.mapped_data[index] != nullptr && readback.memories[index] != VK_NULL_HANDLE) {
+         dfn.vkUnmapMemory(device, readback.memories[index]);
+       }
+@@ -4475,8 +4502,39 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
    bool is_scaled = texture_cache_->IsDrawResolutionScaled();
    uint64_t resolve_key = MakeReadbackResolveKey(written_address, written_length);
    ReadbackBuffer& readback = readback_buffers_[resolve_key];
@@ -123,17 +163,99 @@ index 001f36b..e53c3b7 100644
 +    readback.frame_streak = 1;
 +  }
    readback.last_used_frame = frame_current_;
-+  // A multi-pass bake that the CPU reads (created attires) spans a few frames; targets resolved
-+  // every frame are GPU-only, and syncing on them would halve the frame rate.
++  // A multi-pass bake that the CPU reads (created attires) resolves each target on isolated
++  // frames; targets resolved on consecutive frames are GPU-only effects, and syncing on them
++  // would halve the frame rate.
 +  if (readback_mode == ReadbackResolveMode::kBurst &&
 +      readback.frame_streak > kReadbackBurstFrames) {
 +    return true;
 +  }
 +  if (REXCVAR_GET(frame_event_log) &&
 +      (readback_mode == ReadbackResolveMode::kBurst || readback_mode == ReadbackResolveMode::kFull)) {
-+    REXGPU_INFO("Frame event: blocking resolve readback, frame {} address {:08X} length {} streak {}",
++    REXGPU_INFO("Frame event: {} resolve readback, frame {} address {:08X} length {} streak {}",
++                readback_mode == ReadbackResolveMode::kBurst ? "deferred" : "blocking",
 +                frame_current_, written_address, written_length, readback.frame_streak);
 +  }
    uint32_t write_index = readback.current_index;
++  if (readback_mode == ReadbackResolveMode::kBurst) {
++    for (const PendingResolveReadback& pending : pending_resolve_readbacks_) {
++      if (pending.key == resolve_key && pending.index == write_index) {
++        // Both slots of this target are still in flight; rare, so wait rather than overwrite.
++        if (REXCVAR_GET(frame_event_log)) {
++          REXGPU_INFO("Frame event: blocking resolve readback (slot reuse), frame {}",
++                      frame_current_);
++        }
++        DeliverResolveReadbacks(true);
++        break;
++      }
++    }
++  }
    uint32_t readback_size = AlignReadbackBufferSize(written_length);
    if (!ensure_readback_slot(readback, write_index, readback_size)) {
+     return true;
+@@ -4649,6 +4707,14 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                           VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+ 
++  if (readback_mode == ReadbackResolveMode::kBurst) {
++    // Written to guest memory by DeliverResolveReadbacks once this submission completes.
++    pending_resolve_readbacks_.push_back(
++        {resolve_key, write_index, GetCurrentSubmission(), written_address, written_length});
++    readback.current_index = 1 - readback.current_index;
++    return true;
++  }
++
+   bool use_delayed_sync =
+       readback_mode == ReadbackResolveMode::kFast || readback_mode == ReadbackResolveMode::kSome;
+   uint32_t read_index = write_index;
+@@ -4689,6 +4755,42 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+   return true;
+ }
+ 
++void VulkanCommandProcessor::DeliverResolveReadbacks(bool wait) {
++  if (pending_resolve_readbacks_.empty()) {
++    return;
++  }
++  if (wait) {
++    AwaitAllQueueOperationsCompletion();
++  } else {
++    CheckSubmissionFenceAndDeviceLoss(0);
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  // In order, so a later copy to the same guest range lands last.
++  while (!pending_resolve_readbacks_.empty() &&
++         pending_resolve_readbacks_.front().submission <= submission_completed_) {
++    const PendingResolveReadback pending = pending_resolve_readbacks_.front();
++    pending_resolve_readbacks_.pop_front();
++    auto it = readback_buffers_.find(pending.key);
++    if (it == readback_buffers_.end()) {
++      continue;
++    }
++    const ReadbackBuffer& readback = it->second;
++    if (readback.mapped_data[pending.index] == nullptr ||
++        pending.length > readback.sizes[pending.index]) {
++      continue;
++    }
++    VkMappedMemoryRange range = {};
++    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++    range.memory = readback.memories[pending.index];
++    range.size = VK_WHOLE_SIZE;
++    dfn.vkInvalidateMappedMemoryRanges(vulkan_device->device(), 1, &range);
++    if (uint8_t* destination = memory_->TranslatePhysical(pending.address)) {
++      std::memcpy(destination, readback.mapped_data[pending.index], pending.length);
++    }
++  }
++}
++
+ void VulkanCommandProcessor::EvictOldReadbackBuffers(
+     std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
+   if (buffer_map.empty()) {
+@@ -5218,6 +5320,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+       texture_transient_descriptor_sets_used_.pop_front();
+     }
+ 
++    DeliverResolveReadbacks(false);
+     EvictOldReadbackBuffers(readback_buffers_);
+     EvictOldReadbackBuffers(memexport_readback_buffers_);
+ 
