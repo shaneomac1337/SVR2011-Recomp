@@ -7,6 +7,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -15,8 +16,11 @@ using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace Svr2011Launcher
@@ -121,6 +125,11 @@ namespace Svr2011Launcher
                     using (var disc = new DiscImage(args[1])) disc.MatchManifest(DiscImage.LoadManifest(args[2]), "default.xex");
                     result = "ok";
                 }
+                else if (args[0] == "--key-art" && args.Length == 5)
+                {
+                    File.WriteAllBytes(args[3], KeyArt.Read(args[1], args[2]));
+                    result = "ok";
+                }
                 else if (args[0] == "--extract" && args.Length == 5)
                 {
                     var manifest = DiscImage.LoadManifest(args[2]).ToDictionary(m => m.Path, StringComparer.OrdinalIgnoreCase);
@@ -152,8 +161,12 @@ namespace Svr2011Launcher
         string runPath;
         CancellationTokenSource setupCancel;
 
-        static readonly Brush Normal = new SolidColorBrush(Color.FromRgb(0x41, 0x4C, 0x65));
-        static readonly Brush Error = new SolidColorBrush(Color.FromRgb(0xA3, 0x21, 0x30));
+        static readonly Brush Normal = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8));
+        static readonly Brush Muted = new SolidColorBrush(Color.FromRgb(0xA9, 0xB2, 0xC3));
+        static readonly Brush Error = new SolidColorBrush(Color.FromRgb(0xFF, 0x8B, 0x8B));
+
+        [DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
         public LauncherWindow(Layout layout)
         {
@@ -162,7 +175,8 @@ namespace Svr2011Launcher
                 Window = (Window)XamlReader.Load(stream);
             foreach (var name in new[] { "BuildLabel", "SetupView", "IsoPath", "Browse", "SetupProgress", "SetupDetail", "SetupStatus",
                 "Install", "PlayView", "SettingsPanel", "DisplayMode", "WindowSize", "Scale", "ScaleHelp", "Presentation",
-                "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs", "Report" })
+                "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs", "Report",
+                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings" })
                 ui[name] = (FrameworkElement)Window.FindName(name);
 
             string warning = null;
@@ -189,6 +203,19 @@ namespace Svr2011Launcher
             Button("Report").Click += (s, e) => ReportClicked();
             Button("Browse").Click += (s, e) => BrowseClicked();
             Button("Install").Click += (s, e) => InstallClicked();
+            Button("SettingsToggle").Click += (s, e) => ShowSettingsDrawer(ui["SettingsDrawer"].Visibility != Visibility.Visible);
+            Button("CloseSettings").Click += (s, e) => ShowSettingsDrawer(false);
+            // An open dropdown handles Escape first, so this only closes the drawer itself.
+            Window.KeyDown += (s, e) =>
+            {
+                if (e.Key == Key.Escape && ui["SettingsDrawer"].Visibility == Visibility.Visible) { ShowSettingsDrawer(false); e.Handled = true; }
+            };
+            // Match the title bar to the dark window on Windows 10 20H1 and later.
+            Window.SourceInitialized += (s, e) =>
+            {
+                var dark = 1;
+                DwmSetWindowAttribute(new WindowInteropHelper(Window).Handle, 20, ref dark, sizeof(int));
+            };
             ((TextBox)ui["IsoPath"]).TextChanged += (s, e) =>
                 Button("Install").IsEnabled = ((TextBox)ui["IsoPath"]).Text.Trim().Length > 0;
             Window.Closing += (s, e) =>
@@ -205,9 +232,12 @@ namespace Svr2011Launcher
             var problem = PackageProblem();
             if (problem != null)
             {
-                ShowPlay(false);
+                ShowPlay(layout.GameDataReady);
                 SetStatus(problem, true);
+                SetSetupStatus(problem, true);
                 Button("Play").IsEnabled = false;
+                Button("Browse").IsEnabled = false;
+                ui["IsoPath"].IsEnabled = false;
             }
             else if (!layout.GameDataReady) ShowPlay(false);
             else
@@ -250,6 +280,30 @@ namespace Svr2011Launcher
         {
             ui["PlayView"].Visibility = play ? Visibility.Visible : Visibility.Collapsed;
             ui["SetupView"].Visibility = play ? Visibility.Collapsed : Visibility.Visible;
+            if (play) LoadArt();
+        }
+
+        // The art is decoration: without it the window keeps its plain background.
+        void LoadArt()
+        {
+            try
+            {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = new MemoryStream(KeyArt.Read(Path.Combine(layout.DataDir, "nxeart"), "nxebg.jpg"));
+                image.EndInit();
+                image.Freeze();
+                ((Image)ui["Art"]).Source = image;
+            }
+            catch (Exception) { }
+        }
+
+        void ShowSettingsDrawer(bool open)
+        {
+            ui["SettingsDrawer"].Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+            if (open) Combo("DisplayMode").Focus();
+            else Button("SettingsToggle").Focus();
         }
 
         void SetStatus(string message, bool error)
@@ -261,7 +315,7 @@ namespace Svr2011Launcher
         void SetSetupStatus(string message, bool error)
         {
             Text("SetupStatus").Text = message;
-            Text("SetupStatus").Foreground = error ? Error : Normal;
+            Text("SetupStatus").Foreground = error ? Error : Muted;
         }
 
         static void Select(ComboBox control, object value)
@@ -362,6 +416,7 @@ namespace Svr2011Launcher
                 var started = DateTime.Now;
                 game.Exited += (s, e) => Window.Dispatcher.BeginInvoke(new Action(() => GameExited(session, started)));
                 ui["SettingsPanel"].IsEnabled = false;
+                ShowSettingsDrawer(false);
                 Button("Play").IsEnabled = false;
                 ((ContentControl)ui["Play"]).Content = "Game running";
                 SetStatus("Game starting. You can close this launcher; the game keeps running.", false);
@@ -385,7 +440,7 @@ namespace Svr2011Launcher
             catch (IOException) { }
             ui["SettingsPanel"].IsEnabled = true;
             Button("Play").IsEnabled = true;
-            ((ContentControl)ui["Play"]).Content = "_Play SVR 2011";
+            ((ContentControl)ui["Play"]).Content = "_Play";
             if (code == 0) SetStatus("Game closed normally. Ready for another match.", false);
             else SetStatus("The game stopped unexpectedly. Choose Bug report to save the logs for an issue on the project's GitHub page.", true);
         }
