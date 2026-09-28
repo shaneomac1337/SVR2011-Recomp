@@ -215,6 +215,9 @@
             <Label Content="Display s_ync" Target="{Binding ElementName=Presentation}" Margin="0,18,0,0"/>
             <ComboBox x:Name="Presentation" AutomationProperties.Name="Display sync"><ComboBoxItem Content="VSync · Recommended" Tag="Fifo"/><ComboBoxItem Content="Off · Lowest latency, may tear" Tag="Immediate"/><ComboBoxItem Content="Adaptive · Mailbox (test)" Tag="Mailbox"/></ComboBox>
             <TextBlock x:Name="PresentationHelp" Style="{StaticResource Help}"/>
+            <Label Content="Fra_me pacing" Target="{Binding ElementName=FramePacing}" Margin="0,18,0,0"/>
+            <ComboBox x:Name="FramePacing" AutomationProperties.Name="Frame pacing"><ComboBoxItem Content="Automatic · Recommended" Tag="Auto"/><ComboBoxItem Content="Match game timing" Tag="Game"/><ComboBoxItem Content="Even 60 Hz" Tag="Even"/></ComboBox>
+            <TextBlock x:Name="FramePacingHelp" Style="{StaticResource Help}"/>
             <Label Content="_Controller support" Target="{Binding ElementName=Controller}" Margin="0,18,0,0"/>
             <ComboBox x:Name="Controller" AutomationProperties.Name="Controller support"><ComboBoxItem Content="Automatic · Most controllers" Tag="Auto"/><ComboBoxItem Content="Xbox compatibility · XInput" Tag="Xbox"/></ComboBox>
             <TextBlock Style="{StaticResource Help}" Text="Connect your controller before starting. Player slots are assigned automatically."/>

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -17,11 +18,13 @@ namespace Svr2011Launcher
         public string Controller = "Auto";
         public bool PerfCapture;
         public string Presentation = "Fifo";
+        public string FramePacing = "Auto";
 
         static readonly string[] DisplayModes = { "Borderless", "Windowed" };
         static readonly string[] WindowSizes = { "1280x720", "1600x900", "1920x1080" };
         static readonly string[] Controllers = { "Auto", "Xbox" };
         static readonly string[] Presentations = { "Immediate", "Mailbox", "Fifo" };
+        static readonly string[] FramePacings = { "Auto", "Game", "Even" };
 
         public void Validate()
         {
@@ -31,6 +34,7 @@ namespace Svr2011Launcher
             if (Scale < 1 || Scale > 3) throw new InvalidDataException("Invalid resolution scale.");
             if (Array.IndexOf(Controllers, Controller) < 0) throw new InvalidDataException("Invalid controller mode.");
             if (Array.IndexOf(Presentations, Presentation) < 0) throw new InvalidDataException("Invalid display synchronization mode.");
+            if (Array.IndexOf(FramePacings, FramePacing) < 0) throw new InvalidDataException("Invalid frame pacing mode.");
         }
 
         public static LauncherSettings Load(string path)
@@ -48,6 +52,7 @@ namespace Svr2011Launcher
             settings.PerfCapture = Require<bool>(values, "perfCapture");
             // Older version-one files predate display synchronization controls.
             settings.Presentation = values.ContainsKey("presentation") ? Require<string>(values, "presentation") : "Fifo";
+            settings.FramePacing = values.ContainsKey("framePacing") ? Require<string>(values, "framePacing") : "Auto";
             settings.Validate();
             return settings;
         }
@@ -71,7 +76,8 @@ namespace Svr2011Launcher
             json.AppendLine("  \"scale\": " + Scale + ",");
             json.AppendLine("  \"controller\": " + serializer.Serialize(Controller) + ",");
             json.AppendLine("  \"perfCapture\": " + (PerfCapture ? "true" : "false") + ",");
-            json.AppendLine("  \"presentation\": " + serializer.Serialize(Presentation));
+            json.AppendLine("  \"presentation\": " + serializer.Serialize(Presentation) + ",");
+            json.AppendLine("  \"framePacing\": " + serializer.Serialize(FramePacing));
             json.AppendLine("}");
             var directory = Path.GetDirectoryName(Path.GetFullPath(path));
             Directory.CreateDirectory(directory);
@@ -105,7 +111,37 @@ namespace Svr2011Launcher
                 "--vulkan_allow_present_mode_immediate=" + Lower(Presentation == "Immediate"),
                 "--vulkan_allow_present_mode_mailbox=" + Lower(Presentation != "Fifo"),
                 "--vulkan_allow_present_mode_fifo_relaxed=" + Lower(Presentation == "Immediate"),
+                "--present_pace_to_guest_vblank=" + Lower(PacesToGuestVblank()),
             };
+        }
+
+        // The game moves things by measured time, so frames look smoothest shown as soon as they
+        // are finished. Only a 60 Hz display without variable refresh needs them held to the tick.
+        public bool PacesToGuestVblank()
+        {
+            if (FramePacing == "Auto") return PrimaryRefreshHz() < 100;
+            return FramePacing == "Even";
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct DevMode
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+            public short SpecVersion, DriverVersion, Size, DriverExtra;
+            public int Fields, PositionX, PositionY, Orientation, FixedOutput;
+            public short Color, Duplex, YResolution, TTOption, Collate;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
+            public short LogPixels;
+            public int BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern bool EnumDisplaySettings(string device, int mode, ref DevMode devMode);
+
+        public static int PrimaryRefreshHz()
+        {
+            var mode = new DevMode { Size = (short)Marshal.SizeOf(typeof(DevMode)) };
+            return EnumDisplaySettings(null, -1, ref mode) ? mode.DisplayFrequency : 60;
         }
 
         static string Lower(bool value) { return value ? "true" : "false"; }

@@ -44,10 +44,14 @@ Steps:
 
 ### If something is off
 
-- **Stutter or uneven speed:** keep *Display sync* on *VSync*. The game paces
-  itself to 60 FPS like the console, so no external limiter is needed. If you
-  use RivaTuner (RTSS) anyway, set its limit to exactly 60 or off; any other
-  value stutters.
+- **Stutter or uneven speed:** keep *Display sync* on *VSync* and *Frame pacing*
+  on *Automatic*. The game runs itself at 60 FPS like the console, so no
+  external limiter is needed. If you use RivaTuner (RTSS) anyway, set its limit
+  to exactly 60 or off; any other value stutters.
+- **Motion not quite smooth:** *Automatic* frame pacing shows each frame as soon
+  as the game finishes it on monitors of 100 Hz and up, and holds frames to an
+  even 60 Hz beat on 60 Hz monitors. If your monitor has FreeSync or G-Sync,
+  *Match game timing* is smoothest at any refresh rate.
 - **A short hitch the first time you see a new move or arena:** the release
   includes prebuilt shaders for the tested modes, which the game prepares while
   it starts. Anything else compiles the first time it appears, is saved in
@@ -137,8 +141,8 @@ Every play session writes its log, settings and exit result to
    - `rexglue-frame-pacing.patch` presents each frame exactly on the game's
      60 Hz vblank, as the console does, so play is even without a limiter
    - `rexglue-window-restore.patch` fixes a black window after minimizing
-   - `rexglue-async-pipelines.patch` adds an optional switch for fewer shader
-     hitches, off by default
+   - `rexglue-async-pipelines.patch` holds one frame while an unseen shader
+     builds instead of stalling for each pipeline
 
 The investigation notes in [`docs/`](docs) record what was measured and why each
 default was chosen, including [performance](docs/performance.md) and

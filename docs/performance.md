@@ -502,9 +502,10 @@ placeholder. Pipelines without a guest pixel shader never take the async path at
 all; under FSI their generated fragment shader carries the EDRAM depth logic.
 The `pipeline_cache_misses` perf column is never populated.
 
-Experimental change `patches/rexglue-async-pipelines.patch`, off by default via
-`--vulkan_async_skip_placeholder_pipelines` (`play-vulkan.ps1
--SkipPlaceholderPipelines`): pending pipelines skip their draws without a
+Change `patches/rexglue-async-pipelines.patch`, controlled by
+`--vulkan_async_skip_placeholder_pipelines` (on by default in both launchers
+since the 2026-09-28 empty-cache test below; `play-vulkan.ps1
+-SyncShaderCompiles` turns it off): pending pipelines skip their draws without a
 placeholder compile, and vertex-only pipelines are deferred too unless their
 vertex shader memexports. A failed background creation now clears the pending
 state instead of skipping forever. It shipped in commit 74979b1 as an
@@ -574,3 +575,29 @@ presents per 5 seconds, 0.10–0.15 ms interval standard deviation, no empty
 vblanks and no replaced frames. The tester reported it as extremely smooth
 without a limiter. Entrances render at 30 FPS in the game itself and are paced
 evenly at that rate. The launchers now default to VSync.
+
+Follow-up the same day: with even pacing on the tester's 360 Hz display, motion
+still looked less smooth than the old unlocked setup, although presentation
+logs showed no dropped frames outside shader compiles. The game reads the
+PowerPC time base (`mftb`, 772 sites in the translated code) and appears to move
+objects by measured time, while its frames finish 13–21 ms apart. Holding a
+frame to an even tick then shows content timed for another moment. Showing each
+frame when it finishes (`--present_pace_to_guest_vblank=false`) with VSync on
+looked smoother to the tester, despite a less even frame-time graph. The
+launchers' Frame pacing setting therefore defaults to Automatic: game timing on
+monitors of 100 Hz and up, even pacing on 60 Hz monitors, where every frame must
+last exactly one refresh. The high-resolution vblank clock and the overlay fix
+apply in both modes.
+
+## Shader cache in the player package (2026-09-28)
+
+A first launch compiled 274 pipelines during play; each stalled the GPU thread.
+`scripts/merge_shader_cache.py` merges the shader and FSI pipeline storage of
+test sessions into the ignored `shader-cache/` folder, and
+`package-portable.ps1` ships it. With it, a fresh package built all 185
+pipelines at startup in about 6 seconds and compiled none in 6.5 minutes of play
+(`out/portable/SVR2011-2026.09.28-48c5147`). With an empty cache and
+`--vulkan_async_skip_placeholder_pipelines=true`, 117 new pipelines cost one
+held frame per compile burst (up to 150 ms at the start of an entrance) instead
+of a 40–70 ms stall per pipeline; every one of them was already in the shipped
+cache.

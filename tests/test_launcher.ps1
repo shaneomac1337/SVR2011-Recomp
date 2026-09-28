@@ -32,6 +32,17 @@ try {
             Assert ($argsForMode -contains '--vulkan_allow_present_mode_fifo_relaxed=false') 'FIFO did not disable relaxed FIFO.'
         }
     }
+    foreach ($case in @(@('Even', 'true'), @('Game', 'false'))) {
+        $value = New-SvrSettings
+        $value.framePacing = $case[0]
+        Assert ((Get-SvrDisplayArguments $value) -contains "--present_pace_to_guest_vblank=$($case[1])") "Wrong pacing for $($case[0])."
+    }
+    $auto = [string](Test-SvrPacesToGuestVblank (New-SvrSettings)).ToString().ToLowerInvariant()
+    Assert ((Get-SvrDisplayArguments (New-SvrSettings)) -contains "--present_pace_to_guest_vblank=$auto") 'Automatic pacing mismatch.'
+    $bad = New-SvrSettings
+    $bad.framePacing = 'Fast'
+    $threw = $false; try { Test-SvrSettings $bad } catch { $threw = $true }
+    Assert $threw 'Invalid frame pacing was accepted.'
     $old = New-SvrSettings
     $old.Remove('presentation')
     $old | ConvertTo-Json | Set-Content -LiteralPath $path

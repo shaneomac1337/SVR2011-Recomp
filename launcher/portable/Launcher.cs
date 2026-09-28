@@ -58,6 +58,8 @@ namespace Svr2011Launcher
             arguments.Add("--render_target_path_vulkan=fsi");
             // The validated texture compatibility setting; see docs/performance.md.
             arguments.Add("--gpu_allow_invalid_fetch_constants=true");
+            // Unseen shaders hold one frame while they build instead of stalling per pipeline.
+            arguments.Add("--vulkan_async_skip_placeholder_pipelines=true");
             return arguments;
         }
 
@@ -176,7 +178,7 @@ namespace Svr2011Launcher
             foreach (var name in new[] { "BuildLabel", "SetupView", "IsoPath", "Browse", "SetupProgress", "SetupDetail", "SetupStatus",
                 "Install", "PlayView", "SettingsPanel", "DisplayMode", "WindowSize", "Scale", "ScaleHelp", "Presentation",
                 "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs", "Report",
-                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings" })
+                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings", "FramePacing", "FramePacingHelp" })
                 ui[name] = (FrameworkElement)Window.FindName(name);
 
             string warning = null;
@@ -189,7 +191,7 @@ namespace Svr2011Launcher
             if (File.Exists(layout.VersionFile)) Text("BuildLabel").Text = File.ReadAllText(layout.VersionFile).Trim();
 
             ShowSettings(settings);
-            foreach (var name in new[] { "DisplayMode", "WindowSize", "Scale", "Controller", "Presentation" })
+            foreach (var name in new[] { "DisplayMode", "WindowSize", "Scale", "Controller", "Presentation", "FramePacing" })
                 ((ComboBox)ui[name]).SelectionChanged += (s, e) => SetDirty();
             Button("PerfCapture").Click += (s, e) => SetDirty();
             Button("Save").Click += (s, e) => SaveClicked();
@@ -334,6 +336,7 @@ namespace Svr2011Launcher
             Select(Combo("Scale"), value.Scale);
             Select(Combo("Controller"), value.Controller);
             Select(Combo("Presentation"), value.Presentation);
+            Select(Combo("FramePacing"), value.FramePacing);
             ((CheckBox)ui["PerfCapture"]).IsChecked = value.PerfCapture;
             UpdateHelp();
             loading = false;
@@ -348,6 +351,7 @@ namespace Svr2011Launcher
                 Scale = int.Parse(Tag(Combo("Scale"))),
                 Controller = Tag(Combo("Controller")),
                 Presentation = Tag(Combo("Presentation")),
+                FramePacing = Tag(Combo("FramePacing")),
                 PerfCapture = ((CheckBox)ui["PerfCapture"]).IsChecked == true,
             };
         }
@@ -362,7 +366,17 @@ namespace Svr2011Launcher
             {
                 case "Mailbox": Text("PresentationHelp").Text = "Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable."; break;
                 case "Immediate": Text("PresentationHelp").Text = "Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear."; break;
-                default: Text("PresentationHelp").Text = "Each frame lands on a display refresh, evenly paced at 60 FPS without tearing. No FPS limiter needed."; break;
+                default: Text("PresentationHelp").Text = "Each frame lands on a display refresh, without tearing. No FPS limiter needed."; break;
+            }
+            var refresh = LauncherSettings.PrimaryRefreshHz();
+            switch (Tag(Combo("FramePacing")))
+            {
+                case "Game": Text("FramePacingHelp").Text = "Shows each frame as soon as the game finishes it. Smoothest motion with FreeSync, G-Sync or a high refresh rate."; break;
+                case "Even": Text("FramePacingHelp").Text = "Holds each frame for an even 60 Hz beat. Best on a 60 Hz monitor without FreeSync or G-Sync."; break;
+                default:
+                    Text("FramePacingHelp").Text = string.Format("Your main monitor runs at {0} Hz, so this uses {1}.", refresh,
+                        refresh < 100 ? "even 60 Hz pacing" : "the game's own timing");
+                    break;
             }
         }
 

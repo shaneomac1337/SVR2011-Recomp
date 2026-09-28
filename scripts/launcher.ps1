@@ -16,7 +16,7 @@ try { $script:settings = Read-SvrSettings $SettingsPath } catch {
 $reader = [System.Xml.XmlNodeReader]::new([xml](Get-Content "$projectRoot/launcher/Launcher.xaml" -Raw))
 try { $window = [Windows.Markup.XamlReader]::Load($reader) } finally { $reader.Close() }
 $ui = @{}
-foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','Controller','PerfCapture','Save','Reset','Play','Logs','Status','SettingsPanel')) {
+foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','FramePacing','FramePacingHelp','Controller','PerfCapture','Save','Reset','Play','Logs','Status','SettingsPanel')) {
     $ui[$name] = $window.FindName($name)
 }
 function Set-Status([string]$Message, [bool]$ErrorState = $false) {
@@ -34,7 +34,13 @@ function Update-DisplayHelp {
     $ui.PresentationHelp.Text = switch ($ui.Presentation.SelectedItem.Tag) {
         'Mailbox' { 'Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable. Needs a gameplay check.' }
         'Immediate' { 'Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear.' }
-        default { 'Each frame lands on a display refresh, evenly paced at 60 FPS without tearing. No FPS limiter needed.' }
+        default { 'Each frame lands on a display refresh, without tearing. No FPS limiter needed.' }
+    }
+    $refresh = Get-SvrPrimaryRefreshHz
+    $ui.FramePacingHelp.Text = switch ($ui.FramePacing.SelectedItem.Tag) {
+        'Game' { 'Shows each frame as soon as the game finishes it. Smoothest motion with FreeSync, G-Sync or a high refresh rate.' }
+        'Even' { 'Holds each frame for an even 60 Hz beat. Best on a 60 Hz monitor without FreeSync or G-Sync.' }
+        default { "Your main monitor runs at $refresh Hz, so this uses $(if ($refresh -lt 100) { 'even 60 Hz pacing' } else { "the game's own timing" })." }
     }
 }
 function Show-Settings($Value) {
@@ -44,6 +50,7 @@ function Show-Settings($Value) {
     Select-Value $ui.Scale $Value.scale
     Select-Value $ui.Controller $Value.controller
     Select-Value $ui.Presentation $Value.presentation
+    Select-Value $ui.FramePacing $Value.framePacing
     $ui.PerfCapture.IsChecked = $Value.perfCapture
     Update-DisplayHelp
     $script:loading = $false
@@ -55,6 +62,7 @@ function Read-Controls {
     $value.scale = [int]$ui.Scale.SelectedItem.Tag
     $value.controller = [string]$ui.Controller.SelectedItem.Tag
     $value.presentation = [string]$ui.Presentation.SelectedItem.Tag
+    $value.framePacing = [string]$ui.FramePacing.SelectedItem.Tag
     $value.perfCapture = [bool]$ui.PerfCapture.IsChecked
     return $value
 }
@@ -65,7 +73,7 @@ function Set-Dirty {
     }
 }
 Show-Settings $script:settings
-foreach ($name in @('DisplayMode','WindowSize','Scale','Controller','Presentation')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
+foreach ($name in @('DisplayMode','WindowSize','Scale','Controller','Presentation','FramePacing')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
 $ui.PerfCapture.Add_Click({ Set-Dirty })
 $ui.Save.Add_Click({
     try { Save-SvrSettings $SettingsPath (Read-Controls); Set-Status 'Settings saved. They apply the next time you play.' }

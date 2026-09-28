@@ -24,6 +24,11 @@ inline message and safe defaults without silently overwriting the file.
   at 60 FPS and no external limiter is needed; a RivaTuner limit, if used, must
   be exactly 60. Off (Immediate) has slightly lower latency but can tear.
   Mailbox is untested. Settings files without this field load with VSync.
+- Frame pacing defaults to Automatic: game timing (frames shown as soon as they
+  are finished) when the primary monitor runs at 100 Hz or more, even 60 Hz
+  pacing below that. The game moves things by measured time, so showing frames
+  when they finish gives smoother motion; a 60 Hz display without variable
+  refresh still needs even pacing.
 
 Every launch gets an `analysis/vulkan-play-<timestamp>/` folder with an immutable
 settings snapshot, exact runtime arguments, runtime log and exit result. Startup

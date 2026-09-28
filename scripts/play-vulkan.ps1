@@ -4,7 +4,8 @@ param(
     [switch]$Profile,
     [switch]$SynchronousShaders,
     [switch]$KeyboardInput,
-    [switch]$SkipPlaceholderPipelines,
+    # Compile unseen shaders synchronously (stalls) instead of holding a frame while they build.
+    [switch]$SyncShaderCompiles,
     # FSI keeps EDRAM contents across frames the guest does not redraw; see docs/performance.md.
     [ValidateSet('fbo', 'fsi')][string]$RenderTargetPath = 'fsi',
     [string]$SettingsPath,
@@ -51,7 +52,7 @@ if ($SynchronousShaders) { $info.ArgumentList.Add('--async_shader_compilation=fa
 # Keyboard-to-controller emulation lets automated loops drive menus.
 if ($KeyboardInput) { $info.ArgumentList.Add('--mnk_mode=true') }
 # Experimental: defer new pipelines without a synchronous placeholder compile on the GPU thread.
-if ($SkipPlaceholderPipelines) { $info.ArgumentList.Add('--vulkan_async_skip_placeholder_pipelines=true') }
+$info.ArgumentList.Add('--vulkan_async_skip_placeholder_pipelines=' + (!$SyncShaderCompiles).ToString().ToLowerInvariant())
 $info.ArgumentList.Add("--render_target_path_vulkan=$RenderTargetPath")
 if ($Experiment -eq 'InvalidFetch') {
     $info.ArgumentList.Add('--gpu_allow_invalid_fetch_constants=true')
@@ -69,7 +70,7 @@ foreach ($name in @('svr2011.exe','rexruntimerd.dll','rexgpu-xenosrd.dll','Tracy
     settings = $settings
     synchronous_shaders = [bool]$SynchronousShaders
     keyboard_input = [bool]$KeyboardInput
-    skip_placeholder_pipelines = [bool]$SkipPlaceholderPipelines
+    skip_placeholder_pipelines = ![bool]$SyncShaderCompiles
     render_target_path = $RenderTargetPath
     runtime_sha256 = $runtimeHashes
     arguments = @($info.ArgumentList)

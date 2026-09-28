@@ -37,9 +37,12 @@ because it is not code-signed. Choose "More info" and then "Run anyway".
 
 TIPS
 ----
-- Keep "Display sync" on VSync. The game paces itself to 60 FPS like the
-  console, so no FPS limiter is needed. If you use RivaTuner/RTSS anyway,
-  set its limit to exactly 60 or off; any other value makes it stutter.
+- Keep "Display sync" on VSync and "Frame pacing" on Automatic. The game
+  runs itself at 60 FPS like the console, so no FPS limiter is needed. If
+  you use RivaTuner/RTSS anyway, set its limit to exactly 60 or off; any
+  other value makes it stutter.
+- With a FreeSync or G-Sync monitor, "Match game timing" gives the smoothest
+  motion. On a 60 Hz monitor without them, use "Even 60 Hz".
 - "1x Native" internal resolution is the tested setting. 2x and 3x look
   sharper but are experimental.
 - Shaders for the tested modes come prebuilt and are prepared while the
