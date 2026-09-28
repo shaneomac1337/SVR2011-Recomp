@@ -10,9 +10,13 @@ WHAT YOU NEED
 -------------
 - Windows 10 or 11, 64-bit
 - A graphics card with Vulkan support and an up-to-date driver
-  (NVIDIA, AMD or Intel - update from the manufacturer's website)
+  (update it from the manufacturer's website)
 - About 6 GB of free disk space for the game files
-- A controller is recommended (Xbox controllers work best)
+- A controller is recommended
+
+Tested on Windows 11 with an AMD Radeon RX 7900 XT. Windows 10 and other
+graphics cards with Vulkan support are expected to work but have not been
+tested.
 
 
 FIRST START
@@ -47,10 +51,8 @@ WHAT WORKS
 ----------
 Tested: One on One matches, including entrances, finishers and cutscenes.
 Not tested yet: other match types, Create modes, Road to WrestleMania,
-Universe and online. These may crash. Please report what you find!
-
-Known issues:
-- The menu's background fight can run slower than normal.
+Universe and online. These may crash. If one does, send a bug report as
+described below.
 
 
 REPORTING PROBLEMS
@@ -58,11 +60,19 @@ REPORTING PROBLEMS
 If the game crashes or looks wrong:
 1. Close the game.
 2. In the launcher choose "Bug report".
-3. Send the highlighted zip file to the person who gave you this build,
-   together with a short description of what you were doing.
+3. Open an issue on the project's GitHub page and attach the highlighted
+   zip file, together with a short description of what you were doing.
 
-The report contains the game log, your launcher settings, and your Windows
-version and graphics card. It does not contain your saves or game files.
+The report contains:
+- the log files of your last session: runtime log, launcher settings,
+  game arguments and exit result
+- version.txt, the version of this build
+- system.txt: your Windows version, processor count, and graphics card
+  name with driver version
+
+The logs can contain folder paths, and those can show your Windows user
+name. Check the zip before you post it publicly. It does not contain your
+saves or game files.
 
 
 FOLDERS

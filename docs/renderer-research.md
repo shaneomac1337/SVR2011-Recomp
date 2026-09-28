@@ -1,5 +1,8 @@
 # Renderer recommendation for SVR 2011
 
+Status (2026-09-28): this is a dated historical assessment. Vulkan was adopted
+because D3D12 hung on the test GPU; see `boot-investigation.md`.
+
 Researched 2026-09-27. Scope: Windows, AMD Radeon RX 7900 XT, ReXGlue v0.10.0 (`f5337cd`). No game launch, driver test, installation, or renderer change was performed for this research.
 
 ## Recommendation

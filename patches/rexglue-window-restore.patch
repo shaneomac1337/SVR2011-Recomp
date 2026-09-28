@@ -1,14 +1,13 @@
 diff --git a/src/ui/window.cpp b/src/ui/window.cpp
-index b4e045f..cbe9e41 100644
+index b4e045f..246e610 100644
 --- a/src/ui/window.cpp
 +++ b/src/ui/window.cpp
-@@ -613,6 +613,12 @@ void Window::OnRestored(WindowDestructionReceiver& destruction_receiver) {
+@@ -613,6 +613,11 @@ void Window::OnRestored(WindowDestructionReceiver& destruction_receiver) {
    if (!CanSendEventsToListeners()) {
      return;
    }
-+  // Minimizing may disconnect a zero-area presentation surface. SDL may restore
-+  // the same pixel dimensions without sending a size change, so explicitly
-+  // refresh the connection before notifying listeners that the window is usable.
++  // Minimizing can disconnect the surface and SDL may restore the same size without
++  // a resize event, so refresh it before notifying listeners.
 +  if (presenter_surface_) {
 +    presenter_->OnSurfaceResizeFromUIThread();
 +  }

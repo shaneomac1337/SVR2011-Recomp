@@ -1,5 +1,3 @@
-# svr2011 - ReXGlue Recompiled Project
-#
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
@@ -10,7 +8,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(generated/rexglue.cmake)
 
-# Sources
 set(SVR2011_SOURCES
     src/main.cpp
 )

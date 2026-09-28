@@ -1,5 +1,5 @@
 // Reads an Xbox 360 XDVDFS image without mounting it and extracts verified game files.
-// Mirrors scripts/inspect_disc.py, including its defences against malformed images.
+// Mirrors scripts/inspect_disc.py, including its defenses against malformed images.
 using System;
 using System.Collections.Generic;
 using System.IO;

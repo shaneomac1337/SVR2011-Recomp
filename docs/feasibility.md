@@ -1,5 +1,9 @@
 # SVR 2011 PC recompilation: feasibility
 
+Status (2026-09-28): this is a dated historical assessment. The port has since been
+built and plays One on One matches on Vulkan; see `boot-investigation.md` and
+`performance.md`.
+
 Research date: 2026-09-27. This is an initial investigation, not a completed port or a successful build.
 
 ## Assessment
@@ -10,7 +14,7 @@ ReXGlue translates Xbox 360 PowerPC instructions to C++ ahead of time and suppli
 
 ## Verified local starting point
 
-Read-only inspection by the parent agent found:
+Inspection of the retail ISO found:
 
 | Property | Observation |
 | --- | --- |
@@ -36,7 +40,7 @@ The releases page provides a v1.0 release and earlier milestones documenting pro
 
 **Toolchain:** GitHub's latest-release API returned ReXGlue `v0.10.0`, published August 21, 2026. The wiki home still refers to `v0.3.x`; that section should not be treated as the current release version. Pin and record the selected revision before development. [Release](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0), [release API](https://api.github.com/repos/rexglue/rexglue-sdk/releases/latest)
 
-The getting-started guide specifies CMake 3.25+, Ninja and, on Windows, Visual Studio 2022 C++ development components with Clang 20+ and LLVM MSBuild support. Tool availability on this PC has not been established by this research. [Build prerequisites](https://github.com/rexglue/rexglue-sdk/wiki/Getting-Started)
+The getting-started guide specifies CMake 3.25+, Ninja and, on Windows, Visual Studio 2022 C++ development components with Clang 20+ and LLVM MSBuild support. Tool availability on the test PC (Windows 11, RX 7900 XT) had not been established by this research. [Build prerequisites](https://github.com/rexglue/rexglue-sdk/wiki/Getting-Started)
 
 ## Proposed milestones and acceptance checks
 

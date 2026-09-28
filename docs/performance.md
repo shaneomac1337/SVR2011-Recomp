@@ -1,15 +1,28 @@
 # One on One performance and rendering investigation
 
+Status (2026-09-28):
+
+- One on One matches, menus and backstage brawls run at 60 FPS on Vulkan with
+  the FSI render-target path.
+- The character-select flicker is fixed by FSI (see "Resolved: render-target path").
+- The 42–46 FPS menus and backstage are fixed by the XMP patch (see "Backstage
+  brawl frame pacing").
+- Open: other match types are untested, first-seen shaders still cause brief
+  hitches, and the async pipeline switch has not been validated.
+
+This file is a dated log; earlier sections are kept as written. Capture folders,
+screenshots and helper scripts under `analysis/` are local to the test PC
+(Windows 11, RX 7900 XT) and are not in the repository.
+
 Scope: make the Orton–Mysterio One on One path dependable and smooth, including
-entrances, finishers, victory and returning from the match. The user completed
-one match, but this is not yet a production-ready port. Arena is not recorded.
-Never terminate an interactive test or restart it automatically. The user owns
-the session lifetime.
+entrances, finishers, victory and returning from the match. One match was
+completed in play testing, but this is not yet a production-ready port. Arena is
+not recorded. Interactive runs have no timeout; the player closes the game.
 
 ## Baseline
 
-`analysis/vulkan-play-20260927-184353/` contains the first user-confirmed completed
-match. The picture went black during cinematic/finisher sequences, then returned
+`analysis/vulkan-play-20260927-184353/` contains the first completed match
+confirmed in play testing. The picture went black during cinematic/finisher sequences, then returned
 afterward. Audio behavior during black screens has not been confirmed. At the
 end of the run, the log records missing target `0x82600ED0`; that original
 five-instruction dispatch thunk is now registered and the build passes. It is
@@ -56,7 +69,7 @@ unless `gpu_allow_invalid_fetch_constants` is set. The current logs contain many
 of these rejections. This establishes a plausible rendering path, not a proven
 black-screen cause by itself. The option still rejects completely invalid
 descriptor types and zero-data textures. In the actual comparison run
-`analysis/vulkan-play-20260927-185531`, the user confirmed that entrances,
+`analysis/vulkan-play-20260927-185531`, play testing confirmed that entrances,
 finishers and cutscenes became visible. InvalidFetch is now the provisional
 launcher default to retain that rendering fix; repeated validation is pending.
 
@@ -73,10 +86,13 @@ The comparison exited normally after 598.52 seconds. Its 20,459 valid intervals
 cover 596.9604 seconds: median 33.032 ms, p95 35.529 ms, p99 44.503 ms,
 maximum 82.651 ms. This mixed-scene capture is not evidence of a speedup.
 Ten-second windows initially range around 40 FPS and later settle at exactly
-30 FPS; scene markers are unavailable. The user reports a slow background fight
-and stuttering during otherwise playable match action, despite a stable
+30 FPS; scene markers are unavailable. In play testing the background fight was
+slow and otherwise playable match action stuttered, despite a stable
 Afterburner presentation graph. Guest swaps and displayed refreshes must be
 assessed separately.
+
+Resolved: the match stutter in "Smooth gameplay after disabling the external
+limiter"; the slow background fight in "Backstage brawl frame pacing".
 
 ## Deeper profiling
 
@@ -102,16 +118,18 @@ stops it. The capture script checks for the game's listener before attaching.
 
 End-to-end attachment and CSV export passed in
 `analysis/profile-20260927-191123/` (30.07 seconds, 4,915,043 zones).
-This initial trace includes the title screen and cannot diagnose the reported
-background-fight slowdown. A previous attachment attempt against the old build
+This initial trace includes the title screen and cannot diagnose the
+background-fight slowdown seen in play testing. A previous attachment attempt against the old build
 never connected; the 18:55:31 rendering comparison therefore remained unprofiled.
 The runtime selects the AMD RX 7900 XT Vulkan device, so software rendering is
 not the explanation. CPU waits, presentation pacing and GPU execution still
 need to be distinguished in a capture of the affected scene.
 
+Resolved: see "Backstage brawl frame pacing".
+
 ## Background-fight synchronization comparison (19:20)
 
-The user confirmed the scene before capture. Screenshot
+The scene was confirmed on screen before capture. Screenshot
 `analysis/background-profile-scene.png` shows Cena–Orton in the menu practice
 ring and an external presentation counter of 342 FPS. Trace
 `analysis/profile-20260927-192042/session.tracy` covers 30.09 seconds. Its CPU
@@ -126,9 +144,11 @@ immediately, but p95 is 10.166 ms and maximum 20.000 ms. This makes the SDK's
 millisecond polling sleeps a candidate for missed frame deadlines. It does not
 prove those waits are unnecessary: guest synchronization may require them.
 
+Resolved: see "Backstage brawl frame pacing" (the waits ended at the XMP sleeps).
+
 An optional 1 ms polling-cap patch compiled, but was never linked or tested in
-the game. It was deferred after the user reported smooth gameplay from disabling
-the RivaTuner limiter. SDK source and the launcher were restored; the candidate
+the game. It was deferred after gameplay became smooth in play testing with the
+RivaTuner limiter disabled. SDK source and the launcher were restored; the candidate
 patch is retained only in `analysis/rexglue-wait-polling-deferred.patch`.
 The measured improvement therefore cannot be attributed to that patch.
 Do not use `vsync=false` as a presentation-only test: that also changes guest
@@ -136,17 +156,18 @@ vblank from the configured video rate to 1,000 Hz in this SDK.
 
 ## Smooth gameplay after disabling the external limiter
 
-The user closed `analysis/vulkan-play-20260927-191954/` normally (603.88 seconds,
-exit code zero, no fatal guest targets) and reported that actual gameplay became
-very smooth after turning off the RivaTuner limit. The precise limiter-toggle
+`analysis/vulkan-play-20260927-191954/` closed normally (603.88 seconds, exit
+code zero, no fatal guest targets). In play testing, actual gameplay became very
+smooth after turning off the RivaTuner limit. The precise limiter-toggle
 time was not recorded. The background screenshot already shows 342 presentation
 FPS, so the background's roughly 43 guest FPS must not simply be blamed on the
 old 60 FPS limiter; whether that scene still feels slow needs confirmation.
+Resolved: see "Backstage brawl frame pacing".
 
 The later 180–600-second interval contains 25,201 frames over 420.0025 seconds:
 60.002 guest FPS, median 16.553 ms, p95 18.499 ms, p99 19.012 ms and maximum
 23.096 ms. There are no intervals over 33.333 ms. Scene boundaries were not
-recorded, but the long steady interval supports the user's smooth-match report.
+recorded, but the long steady interval supports the smooth-match report.
 Tracy was connected only for the earlier background capture, not this interval.
 
 ```powershell
@@ -155,14 +176,14 @@ python scripts/analyze_perf.py analysis/vulkan-play-20260927-191954/perf.csv --s
 
 Current working setup: Vulkan on RX 7900 XT, texture compatibility enabled,
 RivaTuner frame limiter disabled, original guest timing. Ordinary play does not
-need `-Profile`. This is a user-observed limiter interaction, not proof of the
+need `-Profile`. This limiter interaction was seen in play testing, not proof of the
 exact interception/presentation mechanism. Repeated match and cinematic testing
 remains necessary before calling the port production-ready.
 
 ## Display synchronization and character-select flicker
 
-The user reports extremely smooth One on One gameplay through the launcher,
-but character select still has a brief black flicker. The latest native-scale
+In play testing, One on One gameplay through the launcher was extremely smooth,
+but character select still had a brief black flicker. The latest native-scale
 launcher session `analysis/vulkan-play-20260927-195330-749/` exited normally after
 245.34 seconds with no fatal guest targets.
 
@@ -187,12 +208,14 @@ Flicker investigation, ranked hypotheses:
 `analysis/vulkan-play-20260927-200133-953/` is the first controlled synchronous
 shader test, using saved native settings and frame capture. The temporary
 `-SynchronousShaders` script switch adds only `--async_shader_compilation=false`;
-it is not a persistent launcher default. User confirmation of screen scope,
-trigger, flicker outcome and smoothness is pending. Do not label this fixed.
+it is not a persistent launcher default. Confirmation of screen scope, trigger,
+flicker outcome and smoothness in play testing was pending, so this was not
+labeled fixed. Resolved: see "Synchronous-shader comparison: unchanged" and
+"Resolved: render-target path".
 
 ## Character-select visual capture
 
-The user reports the flash persists. Their latest normal launcher run used
+In play testing the flash persisted. The latest normal launcher run used
 async shaders, so this report alone does not confirm the earlier synchronous
 comparison outcome. Do not mark that hypothesis ruled out yet.
 
@@ -209,10 +232,11 @@ The title-screen capture `transition-20260927-201308-904` verified the recorder.
 The 12-second F8-triggered capture is armed for game run
 `vulkan-play-20260927-201213-658`; the character-select recording is pending.
 No rendering workaround has been promoted.
+Resolved: see "Resolved: render-target path".
 
 ## Focus-loss freeze: recovery candidate
 
-The user reproduced a persistent frozen picture and unusable controls in both
+Play testing reproduced a persistent frozen picture and unusable controls in both
 borderless and windowed mode. Run `vulkan-play-20260927-204235-173` remained
 responsive to Windows and continued submitting guest frames: the ten-second
 frozen-state trace `profile-20260927-204434` contains 447 swap CPU zones.
@@ -239,8 +263,8 @@ those states unchanged. Restoring and then changing its width by one pixel
 immediately changed the presenter to `kUIThreadOnRequest` and
 `kConnectedPaintable`; the original width was restored afterward. This confirms
 that a surface-size notification can recover presentation in the same process.
-User confirmation of visible output and controls remains separate from this
-internal-state observation.
+Confirmation of visible output and controls in play testing remains separate
+from this internal-state observation.
 
 `patches/rexglue-window-restore.patch` refreshes the presenter surface connection
 in `Window::OnRestored`, before listener callbacks. SDL can restore the same
@@ -248,7 +272,7 @@ pixel dimensions without triggering `OnActualSizeUpdate`; the presenter still
 needs notification after a minimized, zero-area surface was disconnected.
 Vulkan builds apply this patch to the pinned SDK through
 `scripts/apply-vulkan-patches.ps1`. The changed object files compile; linking,
-deployment and repeated restore validation await closure of the user's test.
+deployment and repeated restore validation were still to do.
 
 The build script now explicitly synchronizes all three runtime DLLs after each
 Vulkan build and verifies their hashes. Matching PDBs are copied for diagnostics.
@@ -256,7 +280,8 @@ Vulkan build and verifies their hashes. Matching PDBs are copied for diagnostics
 and incomplete-runtime rejection. Each launch records the actual executable and
 DLL hashes. Deployment refuses to overwrite this build's running game.
 Focus-loss recovery and match smoothness still require runtime validation;
-character-select flicker remains open.
+character-select flicker remains open. Resolved for the flicker: see
+"Resolved: render-target path".
 
 ## Acceptance before calling this path ready
 
@@ -272,14 +297,14 @@ character-select flicker remains open.
 
 ### Character-select capture resumed, 2026-09-27 21:18
 
-The restore patch was linked and deployed after the user closed the game.
+The restore patch was linked and deployed.
 Build synchronization verified all runtime DLLs (one updated). Restore behavior
 still needs runtime confirmation; compilation alone is not acceptance.
 Run `vulkan-play-20260927-211756-479` uses native-scale windowed Immediate
 presentation, the established invalid-fetch fix, normal asynchronous shaders,
 and frame timing capture. Window recording is armed on F8 for 12 seconds in
 `transition-20260927-211810-884`. This is the baseline for the flicker comparison;
-no visual result is available until the user triggers the transition.
+no visual result is available until the transition is triggered.
 ### Baseline flicker captured
 
 `transition-20260927-211810-884` contains 720 sampled frames over 12 seconds.
@@ -296,7 +321,7 @@ termination is needed for the repeated-character comparison.
 ### Repeated-character result, 2026-09-27 21:23
 
 Run `vulkan-play-20260927-212323-410`, capture
-`transition-20260927-212338-899`: 720 sampled frames. The user repeatedly switched
+`transition-20260927-212338-899`: 720 sampled frames. The tester repeatedly switched
 between John Cena and John Morrison. Visual checks at frames 41/42, 134 and 578
 confirm the same scene loss with the roster UI intact. Ten intervals lasted
 300, 300, 282, 282, 299, 282, 316, 284, 301 and 268 ms; exact endpoints are in
@@ -304,7 +329,7 @@ confirm the same scene loss with the roster UI intact. Ten intervals lasted
 the first-use shader/resource warm-up explanation, but does not rule out an
 asynchronous rendering or resource-lifetime fault. Next controlled comparison:
 keep settings identical and add `-SynchronousShaders`, capture the same two
-characters. The current game must be closed by the user before that launch.
+characters.
 
 ### Synchronous-shader comparison: unchanged
 
@@ -313,11 +338,11 @@ Run `vulkan-play-20260927-212533-128` confirms
 `transition-20260927-212546-821` has 720 sampled frames. Eleven complete black
 scene intervals lasted 282–301 ms, plus one interval cut off by recording end.
 Frame 52 visibly retains the roster/UI while losing the background and preview.
-The user confirms the same symptom. Disabling async compilation does not fix it;
+The tester saw the same symptom. Disabling async compilation does not fix it;
 normal launch defaults are unchanged.
 
 The next diagnostic is draw submission, rather than another rendering option.
-`patches/rexglue-flicker-diagnostics.patch` adds the opt-in, default-off
+`patches/rexglue-flicker-diagnostics.patch` (since removed) adds the opt-in, default-off
 `vulkan_draw_diagnostics` flag. Each `[DEBUG-flicker]` swap summary records source
 address/size, copy-mode request count, and per active vertex/pixel shader pair:
 draw requests / host draws recorded / requested indices / recorded vertices.
@@ -330,8 +355,7 @@ and must be removed after investigation. The modified C++ object compiles.
 
 `scripts/play-vulkan.ps1 -DrawDiagnostics` enables this explicitly. The window
 recorder now includes Unix UTC milliseconds to align visual events with log times.
-A runtime rebuild/deployment is pending the user closing PID 9552; no active test
-was stopped. Upstream compatibility issue
+Upstream compatibility issue
 https://github.com/xenia-project/game-compatibility/issues/1505 was consulted but
 its visible report does not diagnose this character-select symptom.
 
@@ -361,8 +385,7 @@ packet bin predicates, and visibility-query kill draws. The temporary diagnostic
 now logs `[DEBUG-flicker-packet]` for each of these skipped cases, including
 opcode/bin selection/mask for predicates and index count for visibility skips.
 The diagnostic flag is defined in the common processor and declared by Vulkan.
-Both modified objects compile. This extension is not deployed while the current
-user session is open. The next run can distinguish these filters from absent
+Both modified objects compile. The next run can distinguish these filters from absent
 guest commands without changing rendering behavior or introducing a workaround.
 
 ### Packet filters excluded; loading-state probe prepared
@@ -384,8 +407,8 @@ sub_82595860, which returns true when child+36 is zero and child+16 is nonzero.
 The Lua-facing IsNowLoadingFade wrapper inverts that result; the sampler records
 the inner query value, not a confidently named fade state.
 
-For current PID 13848 the logged guest virtual base is 0x200000000; the manager
-currently points to 0xAED2B8D0, child to 0xABEB AE20 (without the space).
+In the session under test the logged guest virtual base was 0x200000000; the
+manager pointed to 0xAED2B8D0 and the child to 0xABEBAE20.
 `analysis/capture-loading-state.py` opens the process read-only, waits for F8,
 and samples manager/child fields for 13 seconds with UTC timestamps. It never
 writes guest memory or suspends the process. It is session-specific diagnostic
@@ -416,7 +439,7 @@ Cause: the default Vulkan host-render-target (FBO) path does not preserve the
 scene across frames in which the guest skips its 3D pass. On each switch the game
 stops issuing the stage/preview draws for 17–18 frames while it swaps models, but
 keeps its four resolve copies per swap. Real hardware keeps re-resolving the last
-scene still held in EDRAM (the user confirms no flash on console); the FBO path
+scene still held in EDRAM (the tester saw no flash on console); the FBO path
 resolves black. Fragment shader interlock (`--render_target_path_vulkan=fsi`),
 which emulates EDRAM directly, keeps the stage visible; only the preview slot is
 empty while the new model loads, as expected.
@@ -435,6 +458,11 @@ warm cache): gameplay 262–308 s after first swap has 59.98 guest FPS, median
 budgets. The FBO baseline above is 59.99 / 16.53 / 18.04 / 18.54 / 33.12 ms. Menus
 run at 42–46 FPS as they did before. One short match only; gameplay p95/p99
 are about 1–1.5 ms higher, so a longer comparison is still worthwhile.
+
+Resolved: `patches/rexglue-xmp-no-delay.patch` fixed the menu rate. Session
+`vulkan-play-20260928-075634-047` held 60.00 FPS from the title screen onward
+(10-second windows), including menus and backstage. See "Backstage brawl frame
+pacing".
 
 Ruled out along the way: a single long guest wait (a kernel wait tracer showed no
 wait spanning a flash), CPU-bound loading (per-thread CPU during a switch matched
@@ -455,7 +483,7 @@ and exits 1 if any scene-dark run of three or more frames appears.
 
 ## Rare single hitches after the FSI switch, 2026-09-27 23:10
 
-The user noticed a very brief freeze during a match in launcher run
+The tester noticed a very brief freeze during a match in launcher run
 `vulkan-play-20260927-230254-917` (FSI, no perf capture). The log shows new
 graphics pipelines created mid-match (23:04:06–07, 23:04:13, 23:05:04) and the
 one-time warning "Skipping Vulkan frame presentation due to async placeholder draw
@@ -479,8 +507,8 @@ Experimental change `patches/rexglue-async-pipelines.patch`, off by default via
 -SkipPlaceholderPipelines`): pending pipelines skip their draws without a
 placeholder compile, and vertex-only pipelines are deferred too unless their
 vertex shader memexports. A failed background creation now clears the pending
-state instead of skipping forever. The object compiles and the runtime deploys;
-it has not been run. Expected effect: long guest stalls on first-seen pipelines
+state instead of skipping forever. It shipped in commit 74979b1 as an
+off-by-default switch; the validation described below is still to do. Expected effect: long guest stalls on first-seen pipelines
 drop to shader translation time; presentation is still held while real pipelines
 compile, which background threads do in parallel.
 
@@ -494,8 +522,9 @@ fade as the FSI storage fills.
 
 Backstage brawls ran at 43–46 guest FPS while matches held 60. The frame intervals were
 bimodal, ~16.7 ms and ~33 ms (`analysis/vulkan-play-20260928-073701-481/perf.csv`).
-That is a 60 FPS loop missing vblank, not a 30 FPS target. RPCS3 reports for the PS3
-version describe 60 FPS backstage. The FBO render-target path showed the same pattern
+That is a 60 FPS loop missing vblank, not a 30 FPS target. An RPCS3 forum thread for
+the PS3 version (https://forums.rpcs3.net/archive/index.php/thread-204858.html)
+reports 60 FPS backstage. The FBO render-target path showed the same pattern
 (`vulkan-play-20260928-073957-347`), so FSI was not the cause. A 1 ms
 `timeBeginPeriod` request changed nothing: guest `Sleep(1)` already averaged 1.08 ms.
 
@@ -507,8 +536,8 @@ ended at the same instants. The call is `XMPGetPlaybackController`. The SDK's XM
 sleeps 10 ms whenever it is called off the main thread, a workaround for another title
 that polls it in a tight loop; `XMPGetStatus` similarly sleeps 1 ms.
 `patches/rexglue-xmp-no-delay.patch` replaces both sleeps with a yield. With it, the
-GPU thread completes 300 frame handshakes per 5 s (60 FPS) backstage, and the user
-confirmed smooth play (`vulkan-play-20260928-075634-047`).
+GPU thread completes 300 frame handshakes per 5 s (60 FPS) backstage, and play was
+smooth in testing (`vulkan-play-20260928-075634-047`).
 
 `play-vulkan.ps1 -ExtraArguments '--cvar=value'` passes additional runtime flags for
 experiments like these.

@@ -79,7 +79,7 @@ Write-Output "Vulkan game started (PID $($process.Id)). Logs: $run"
 Write-Output 'No timeout is set. Close the game window when you are finished.'
 $timer = [System.Diagnostics.Stopwatch]::StartNew()
 try {
-    # Observe the exit without ever terminating the user's interactive session.
+    # Wait for exit; never terminate the game.
     $process.WaitForExit()
     $fatalTargets = @()
     if (Test-Path "$run/runtime.log") {

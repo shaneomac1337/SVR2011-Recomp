@@ -33,8 +33,7 @@
           <TextBlock Text="VS. RAW" Foreground="#FFFFFF" FontSize="27" FontWeight="Bold"/>
           <TextBlock Text="2011" Foreground="#FFFFFF" FontSize="64" FontWeight="Bold" Margin="-3,0,0,12"/>
           <Border Height="3" Background="#647FF2" Width="46" HorizontalAlignment="Left" Margin="0,0,0,22"/>
-          <TextBlock Text="Back to the ring." Foreground="#FFFFFF" FontSize="20"/>
-          <TextBlock Text="Your game. Your settings." Foreground="#BEC4D4" Margin="0,9,0,0"/>
+          <TextBlock Text="Unofficial PC build" Foreground="#FFFFFF" FontSize="20"/>
         </StackPanel>
         <StackPanel Grid.Row="2">
           <TextBlock Text="Vulkan renderer" Foreground="#FFFFFF" FontWeight="SemiBold"/>

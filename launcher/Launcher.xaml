@@ -33,12 +33,11 @@
           <TextBlock Text="VS. RAW" Foreground="#FFFFFF" FontSize="27" FontWeight="Bold"/>
           <TextBlock Text="2011" Foreground="#FFFFFF" FontSize="64" FontWeight="Bold" Margin="-3,0,0,12"/>
           <Border Height="3" Background="#647FF2" Width="46" HorizontalAlignment="Left" Margin="0,0,0,22"/>
-          <TextBlock Text="Back to the ring." Foreground="#FFFFFF" FontSize="20"/>
-          <TextBlock Text="Your game. Your settings." Foreground="#BEC4D4" Margin="0,9,0,0"/>
+          <TextBlock Text="Unofficial PC build" Foreground="#FFFFFF" FontSize="20"/>
         </StackPanel>
         <StackPanel Grid.Row="2">
           <TextBlock Text="Vulkan renderer" Foreground="#FFFFFF" FontWeight="SemiBold"/>
-          <TextBlock Text="Cinematic compatibility enabled" Foreground="#BEC4D4" Margin="0,6,0,24"/>
+          <TextBlock Text="Tested in One on One matches" Foreground="#BEC4D4" Margin="0,6,0,24"/>
           <TextBlock Text="Community PC project" Foreground="#BEC4D4" FontSize="12"/>
           <TextBlock Text="Experimental build" Foreground="#BEC4D4" FontSize="12" Margin="0,4,0,0"/>
         </StackPanel>
@@ -61,7 +60,7 @@
           <ComboBox x:Name="Scale" AutomationProperties.Name="Internal resolution"><ComboBoxItem Content="1× · Native (recommended)" Tag="1"/><ComboBoxItem Content="2× · Experimental" Tag="2"/><ComboBoxItem Content="3× · Experimental" Tag="3"/></ComboBox>
           <TextBlock x:Name="ScaleHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0" Text="Changes rendering detail, independently of window size."/>
           <Label Content="Display _synchronization" Target="{Binding ElementName=Presentation}" Margin="0,20,0,0"/>
-          <ComboBox x:Name="Presentation" AutomationProperties.Name="Display synchronization"><ComboBoxItem Content="Off · Current smooth setup" Tag="Immediate"/><ComboBoxItem Content="Adaptive presentation · Mailbox (test)" Tag="Mailbox"/><ComboBoxItem Content="Monitor VSync · FIFO (test)" Tag="Fifo"/></ComboBox>
+          <ComboBox x:Name="Presentation" AutomationProperties.Name="Display synchronization"><ComboBoxItem Content="Off · Recommended" Tag="Immediate"/><ComboBoxItem Content="Adaptive presentation · Mailbox (test)" Tag="Mailbox"/><ComboBoxItem Content="Monitor VSync · FIFO (test)" Tag="Fifo"/></ComboBox>
           <TextBlock x:Name="PresentationHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>
           <Label Content="_Controller support" Target="{Binding ElementName=Controller}" Margin="0,20,0,0"/>
           <ComboBox x:Name="Controller" AutomationProperties.Name="Controller support"><ComboBoxItem Content="Automatic · Standard controller support" Tag="Auto"/><ComboBoxItem Content="Xbox compatibility · XInput" Tag="Xbox"/></ComboBox>
@@ -77,7 +76,7 @@
         </StackPanel>
       </ScrollViewer>
       <StackPanel Grid.Row="2" Margin="0,15,0,0">
-        <TextBlock x:Name="Status" Text="Ready. Your progress stays in the existing save folder." Foreground="#414C65" FontSize="13" Margin="0,0,0,12" AutomationProperties.LiveSetting="Polite"/>
+        <TextBlock x:Name="Status" Text="Ready. Saves are kept in userdata/vulkan." Foreground="#414C65" FontSize="13" Margin="0,0,0,12" AutomationProperties.LiveSetting="Polite"/>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Button x:Name="Play" Content="_Play SVR 2011" Background="#354DB0" Foreground="White" FontSize="17" FontWeight="SemiBold" MinHeight="52"/>
           <Button x:Name="Logs" Grid.Column="2" Content="Open _logs"/>

@@ -1,9 +1,5 @@
 # Product
 
-## Register
-
-product
-
 ## Users and purpose
 
 The project's Windows player wants to launch the working SVR 2011 Vulkan build,

@@ -150,7 +150,7 @@ $window.Add_ContentRendered({
             Select-Value $ui.Scale 2
             if ($ui.ScaleHelp.Text -notlike '*Higher detail*') { throw 'Scaling explanation did not update.' }
             Show-Settings (New-SvrSettings)
-            Set-Status 'Ready. Your progress stays in the existing save folder.'
+            Set-Status 'Ready. Saves are kept in userdata/vulkan.'
             if ($ScreenshotPath) {
                 $window.UpdateLayout()
                 $surface = $window.Content

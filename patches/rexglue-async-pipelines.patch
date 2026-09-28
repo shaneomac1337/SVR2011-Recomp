@@ -1,5 +1,5 @@
 diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
-index 91ac08f..710e38f 100644
+index 91ac08f..66664e0 100644
 --- a/src/graphics/vulkan/pipeline_cache.cpp
 +++ b/src/graphics/vulkan/pipeline_cache.cpp
 @@ -55,6 +55,11 @@ REXCVAR_DEFINE_INT32(
@@ -14,14 +14,12 @@ index 91ac08f..710e38f 100644
  REXCVAR_DEFINE_BOOL(vulkan_tessellation_wireframe, false, "GPU/Vulkan",
                      "Render tessellation as wireframe")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
-@@ -1111,8 +1116,15 @@ bool VulkanPipelineCache::ConfigurePipeline(
+@@ -1111,8 +1116,13 @@ bool VulkanPipelineCache::ConfigurePipeline(
      }
    }
  
-+  // Draws are skipped while a pipeline is pending (and such frames are not presented), so the
-+  // placeholder pipeline is never bound. Without it, nothing is compiled on this thread, and
-+  // vertex-only pipelines can be deferred too unless they memexport, since skipping those draws
-+  // would drop guest-visible memory writes.
++  // Pending draws are skipped and not presented, so no placeholder is needed. Vertex-only
++  // pipelines defer too unless they memexport: skipping those would drop guest memory writes.
 +  const bool skip_placeholder = REXCVAR_GET(vulkan_async_skip_placeholder_pipelines);
    bool use_async = REXCVAR_GET(async_shader_compilation) && !creation_threads_.empty() &&
 -                   pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE;
@@ -31,7 +29,7 @@ index 91ac08f..710e38f 100644
    uint8_t async_priority = pipeline_util::kPriorityLowest;
    if (use_async) {
      uint32_t bound_rts =
-@@ -1127,6 +1139,15 @@ bool VulkanPipelineCache::ConfigurePipeline(
+@@ -1127,6 +1137,15 @@ bool VulkanPipelineCache::ConfigurePipeline(
  
    auto it = pipelines_.find(description);
    if (it != pipelines_.end()) {
@@ -47,7 +45,7 @@ index 91ac08f..710e38f 100644
      VkPipeline found_pipeline = it->second.pipeline.load(std::memory_order_acquire);
      if (found_pipeline == VK_NULL_HANDLE) {
        PipelineCreationArguments creation_arguments;
-@@ -1159,21 +1180,28 @@ bool VulkanPipelineCache::ConfigurePipeline(
+@@ -1159,21 +1178,28 @@ bool VulkanPipelineCache::ConfigurePipeline(
    bool queued_async_creation = false;
    if (use_async) {
      creation_arguments_real.priority = async_priority;
@@ -88,7 +86,7 @@ index 91ac08f..710e38f 100644
    }
  
    if (!queued_async_creation && !EnsurePipelineCreated(creation_arguments_real)) {
-@@ -1202,7 +1230,8 @@ bool VulkanPipelineCache::ConfigurePipeline(
+@@ -1202,7 +1228,8 @@ bool VulkanPipelineCache::ConfigurePipeline(
    if (pipeline_handle_out) {
      *pipeline_handle_out = &pipeline.second;
    }
@@ -98,7 +96,7 @@ index 91ac08f..710e38f 100644
  }
  
  bool VulkanPipelineCache::IsCreatingPipelines() const {
-@@ -1224,11 +1253,13 @@ void VulkanPipelineCache::GetPipelineAndLayoutByHandle(
+@@ -1224,11 +1251,13 @@ void VulkanPipelineCache::GetPipelineAndLayoutByHandle(
      }
      return;
    }
@@ -113,7 +111,7 @@ index 91ac08f..710e38f 100644
    }
  }
  
-@@ -3550,6 +3581,7 @@ void VulkanPipelineCache::CreationThread(size_t thread_index) {
+@@ -3550,6 +3579,7 @@ void VulkanPipelineCache::CreationThread(size_t thread_index) {
        } else {
          creation_arguments.pipeline->second.pipeline.store(VK_NULL_HANDLE,
                                                             std::memory_order_release);
@@ -121,7 +119,7 @@ index 91ac08f..710e38f 100644
        }
      }
  
-@@ -3583,6 +3615,7 @@ void VulkanPipelineCache::CreateQueuedPipelinesOnProcessorThread() {
+@@ -3583,6 +3613,7 @@ void VulkanPipelineCache::CreateQueuedPipelinesOnProcessorThread() {
        } else {
          creation_arguments.pipeline->second.pipeline.store(VK_NULL_HANDLE,
                                                             std::memory_order_release);

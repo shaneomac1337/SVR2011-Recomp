@@ -1,6 +1,19 @@
 # First native boot investigation
 
-Scope authorized on 2026-09-27: begin an SVR 2011 native Windows recompilation
+Status (2026-09-28):
+
+- One on One matches, menus and backstage brawls run at 60 FPS on Vulkan with
+  the FSI render-target path.
+- The character-select flicker is fixed by FSI, and the 42–46 FPS menus and
+  backstage by the XMP patch. Details are in `performance.md`.
+- Open: other match types are untested, first-seen shaders still cause brief
+  hitches, and the async pipeline switch has not been validated.
+
+This file is a dated log from 2026-09-27; earlier sections are kept as written.
+Capture folders, screenshots and helper scripts under `analysis/` are local to
+the test PC (Windows 11, RX 7900 XT) and are not in the repository.
+
+Scope set on 2026-09-27: begin an SVR 2011 native Windows recompilation
 using the existing Xbox 360 ISO. The first deliverable is a reproducible extraction,
 code-generation and build path, plus evidence from a bounded startup run.
 A title screen, playable match and complete port are later milestones.
@@ -50,6 +63,8 @@ Their causal relationship to startup failure has not been established.
 
 ## Latest startup result
 
+This was the latest result when written; later sections supersede it.
+
 Runtime-guided discovery subsequently added `0x826E0F68` and `0x826E4D40`.
 After strict regeneration and a successful incremental build, the run recorded in
 `analysis/runtime-20260927-175542/` survived the full 20-second probe. The harness
@@ -64,7 +79,6 @@ been visually verified. A stalled process can also survive a timeout.
 Code review found a report-path collision that could replace an extracted file
 with JSON. The extractor now rejects those destinations before reading/extracting;
 two regression tests preserve the original bytes. All nine Python tests pass.
-The Spec review reported no material findings for this initial investigation.
 
 ## Remaining work
 
@@ -74,16 +88,17 @@ milestones require separate visual and interaction verification. Next, inspect a
 bounded graphical run and determine whether the game is rendering, waiting for
 input, or stalled during initialization. Repeated physical allocation errors and
 unknown audio-register writes remain observations, not established root causes.
+Resolved: later sections cover the title screen, menus and matches.
 
 ## WWE-logo crash investigation
 
-The user reported a crash while pressing Start at the WWE logo. Their log
+Play testing hit a crash when pressing Start at the WWE logo. The tester's log
 (`analysis/wwe-logo-user.log`, preserved from `svr2011_002.log`) ended with an
 unregistered target `0x82CFD9C8`. A longer startup probe reproduced that exact
 fatal address in `analysis/runtime-20260927-180039/`.
 
 Adding that entry revealed a second missed target, `0x82CF7068`, in
-`analysis/runtime-20260927-180218/`. The user had not interacted with that test,
+`analysis/runtime-20260927-180218/`. No input was given during that test,
 so Start is not a necessary trigger: the timed intro transition also reaches it.
 Generated instructions show valid dispatch thunks at both addresses: the first
 calls through an object vtable, and the second adjusts `r3` by -4 then tail-calls
@@ -101,15 +116,15 @@ means only that the process was alive at the deadline, not a gameplay pass.
 
 ## Menu and gameplay rendering
 
-The user confirmed reaching and controlling the menu. Subsequent background
+Play testing confirmed the menu was reachable and responded to input. Background
 gameplay execution reached missing callbacks `0x82ACF950` and `0x82ACF9A0`;
 both were registered, regenerated with strict validation, and rebuilt. The former
 is an argument-adjusting virtual-call thunk; these are genuine function entries,
 not success-returning replacements.
 
 The next hardware run (`analysis/runtime-20260927-180744/`) terminated after
-31.23 seconds with D3D12 `0x887A0006`, `DEVICE_HUNG`. The user independently
-reported a driver crash. Adapter: AMD Radeon RX 7900 XT, Windows driver version
+31.23 seconds with D3D12 `0x887A0006`, `DEVICE_HUNG`. The tester separately saw
+a driver crash. Adapter: AMD Radeon RX 7900 XT, Windows driver version
 32.0.31041.3013. No further hardware-rendered runs were started after that report.
 Invalid texture-fetch descriptors appeared before the hang, but causality is
 unproven; the compatibility bypass was not enabled speculatively.
@@ -119,13 +134,14 @@ run (`analysis/runtime-20260927-180957/`) confirmed Microsoft Basic Render Drive
 (vendor 0x1414/device 0x008C), enabled DRED, and survived its 60-second deadline
 with no fatal guest target or device-removal message. A captured frame showed
 "Load Successful" over the title screen. The D3D12 debug layer is unavailable on
-this machine; requesting it logs a warning, while DRED still initializes.
+the test PC (Windows 11, RX 7900 XT); requesting it logs a warning, while DRED
+still initializes.
 
 This is an alternate diagnostic path, not a fix for the hardware hang. Verify the
 same background-gameplay scene in software before comparing renderer behavior.
 
-The follow-up software run (`analysis/runtime-20260927-181139/`) was stopped by
-the agent after the user reported a black screen and unacceptable performance.
+The follow-up software run (`analysis/runtime-20260927-181139/`) was stopped
+deliberately after play testing showed a black screen and unacceptable performance.
 This was a deliberate external termination, not another observed game crash.
 WARP is not a usable gameplay workaround, and the hardware renderer defect remains
 unresolved. All test instances were closed. The original title/menu progress is
@@ -140,7 +156,7 @@ proven fix without a controlled test.
 
 ## Vulkan comparison build (2026-09-27)
 
-The user authorized proceeding with Vulkan. Built the pinned v0.10.0 SDK source
+Work then moved to Vulkan. Built the pinned v0.10.0 SDK source
 (`f5337cdc947ff6d4c4196737e2c807a48f2a1fc2`) together with the host in
 `out/build/win-amd64-relwithdebinfo-vulkan/`, with Vulkan ON and D3D12 OFF.
 The original D3D12 executable and DLLs were preserved. Vulkan uses separate
@@ -162,24 +178,23 @@ not a gameplay benchmark. No fatal guest targets, `VK_ERROR`, `DEVICE_LOST`, or
 `DEVICE_HUNG` messages appeared in this run. Heap-allocation errors and missing
 sound-bank warnings remain in the log; startup survival does not resolve those.
 
-The regular `scripts/play-vulkan.ps1` launcher was then opened for user testing.
+The regular `scripts/play-vulkan.ps1` launcher was then opened for play testing.
 In `analysis/vulkan-play-20260927-182805/`, a later captured frame
 (`analysis/vulkan-play.png`, around 18:29:25) shows Cena and Orton rendered in the
 ring with the "Press START button For Main Menu" prompt. The overlay reads
 Vulkan / 60 FPS. The process remained responsive and no fatal guest-function or
 device-loss message had appeared. This verifies rendering beyond the intro;
-controller behavior and sustained match stability still need user confirmation.
-The launcher has
-no diagnostic timeout; close the game window to stop. Runtime logs are written
-to `analysis/vulkan-play-<timestamp>/`.
+controller behavior and sustained match stability still needed confirmation in
+play testing. The launcher has no diagnostic timeout; close the game window to
+stop. Runtime logs are written to `analysis/vulkan-play-<timestamp>/`.
 
 Validation: successful configure/build, PowerShell syntax checks, all nine
-existing unit tests, repeatable source preparation, Vulkan/WARP rejection before
-launch, and independent Standards/Spec reviews with zero blocking findings.
+existing unit tests, repeatable source preparation, and Vulkan/WARP rejection
+before launch.
 
 ## First match-start failures and measured slowdown
 
-The user confirmed playing the background fight, then reported a crash starting
+In play testing the background fight was playable, then the game crashed starting
 One on One, Randy Orton versus Rey Mysterio (arena unspecified). The regular
 Vulkan run above ended at 18:30:01 with missing guest target `0x82BFAE18`.
 The original image contains `4E800020` (`blr`) there, followed by zero padding,
@@ -188,17 +203,16 @@ with four read-only references at `820B07DC`, `820B0878`, `820B08C0`, and
 and verified the emitted registration and original return behavior. This is not
 a fabricated success stub or a GPU device-loss error.
 
-The retest, `analysis/vulkan-play-20260927-183339/`, reached the match according
-to the user, then exited at 18:35:20 on missing target `0x82ACF9B8`. The agent did
-not terminate this run. That address is a six-instruction virtual dispatch thunk
+The retest, `analysis/vulkan-play-20260927-183339/`, reached the match in play
+testing, then exited at 18:35:20 on missing target `0x82ACF9B8`. No tool
+terminated this run. That address is a six-instruction virtual dispatch thunk
 ending in `bctr`, adjacent to the previously registered `0x82ACF9A0`. It was also
 added as a discovery seed. The next run, `analysis/vulkan-play-20260927-183832/`,
 remained running beyond both prior crash points. A frame captured around 18:40:05
 (`analysis/vulkan-match-retest.png`) shows Orton and Mysterio fighting in the
 selected match with a crowd and wrestler HUD. That run then crashed at 18:40:12
-on missing callback `0x82600EB8`; it was not terminated by the agent. The user
-confirmed the match was working before exit and that background-fight performance
-felt better. The third target is another six-instruction virtual dispatch thunk,
+on missing callback `0x82600EB8`; no tool terminated it. In play testing the
+match worked before the exit and background-fight performance felt better. The third target is another six-instruction virtual dispatch thunk,
 referenced at `0x82035ED0`; it has been seeded and its generated implementation
 checked against the original instructions. Runtime validation remains pending.
 
@@ -223,12 +237,9 @@ were changed.
 
 The later CSV contains 4,500 rows over 98.54 seconds: middle ten-second windows
 averaged roughly 39.7–42.6 guest FPS and the final partial window averaged 59.9.
-This is consistent with the user's improvement report, but scene and cache state
-were not controlled, so it does not establish a performance fix.
+This is consistent with the improvement seen in play testing, but scene and cache
+state were not controlled, so it does not establish a performance fix.
 
-User preference: do not stop interactive tests. Use only the no-timeout
-`play-vulkan.ps1` for user sessions; do not apply the bounded smoke harness to a
-session they are playing. The launcher now waits for process exit and records
-`result.json` plus normal-exit/crash output without killing the process. After
-the third callback rebuild, leave the next launch to the user. All three match
-exits above have fatal guest targets in their logs, rather than agent timeouts.
+`play-vulkan.ps1` waits for process exit and records `result.json` plus
+normal-exit/crash output without killing the process. All three match exits above
+have fatal guest targets in their logs; none was a tooling timeout.

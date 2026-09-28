@@ -15,3 +15,6 @@ __pycache__/
 /cache/
 /userdata/
 /SVR 2011.lnk
+
+# Local slop-audit checklists
+/anti-slop/

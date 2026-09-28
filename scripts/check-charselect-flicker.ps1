@@ -1,7 +1,5 @@
-# Regression check for the character-select scene flicker (see docs/performance.md).
-# Preconditions: game launched with play-vulkan.ps1 -KeyboardInput, roster cursor active on character select.
-# Briefly takes window focus, alternates left-stick right/left (D/A), samples the window and reports
-# scene-dark runs of three or more frames. Exit 1 = flicker reproduced, 0 = none. Never stops the game.
+# Character-select flicker check; needs play-vulkan.ps1 -KeyboardInput and the roster cursor active.
+# Taps D/A and samples the window: exit 1 on dark runs of 3+ frames, 0 otherwise. Never stops the game.
 param([int]$Switches = 6, [int]$IntervalMs = 900, [string]$OutDir)
 $ErrorActionPreference = 'Stop'
 $refs = @('System.Drawing.Common','System.Drawing.Primitives','System.Threading.Thread','System.Collections')
@@ -26,7 +24,7 @@ public static class FlickerLoop {
     SetForegroundWindow(w); Thread.Sleep(250);
   }
   static void Tap(byte vk) { keybd_event(vk,0,0,UIntPtr.Zero); Thread.Sleep(90); keybd_event(vk,0,2,UIntPtr.Zero); }
-  // Returns rows: elapsed_ms, mean, keyEvent(0/1)
+  // Rows: elapsed_ms, mean brightness, key sent (0/1), unix_ms.
   public static List<double[]> Run(IntPtr w, string dir, int switches, int intervalMs) {
     var rows = new List<double[]>(); var t = Stopwatch.StartNew();
     long nextKey = 700; int sent = 0; long end = 700 + (long)switches*intervalMs + 900; int i = 0;

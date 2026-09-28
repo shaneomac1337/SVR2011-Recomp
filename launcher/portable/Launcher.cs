@@ -387,7 +387,7 @@ namespace Svr2011Launcher
             Button("Play").IsEnabled = true;
             ((ContentControl)ui["Play"]).Content = "_Play SVR 2011";
             if (code == 0) SetStatus("Game closed normally. Ready for another match.", false);
-            else SetStatus("The game stopped unexpectedly. Choose Bug report to package the logs for the developer.", true);
+            else SetStatus("The game stopped unexpectedly. Choose Bug report to save the logs for an issue on the project's GitHub page.", true);
         }
 
         static List<string> FatalTargets(string log)
@@ -446,7 +446,7 @@ namespace Svr2011Launcher
                     using (var writer = new StreamWriter(entry.Open())) writer.Write(SystemSummary());
                 }
                 OpenFolder(zipPath, true);
-                SetStatus("Bug report saved: " + Path.GetFileName(zipPath) + ". Send this file to the developer.", false);
+                SetStatus("Bug report saved: " + Path.GetFileName(zipPath) + ". Open an issue on the project's GitHub page and attach this file.", false);
             }
             catch (Exception error) { SetStatus("Could not create the bug report: " + error.Message, true); }
         }

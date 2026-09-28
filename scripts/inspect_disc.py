@@ -1,6 +1,6 @@
 """Read an Xbox disc without mounting it; inventory files and extract default.xex.
 
-Uses only Python's standard library. Outputs are local inputs, not source code.
+Uses only Python's standard library. Outputs stay local and are never committed.
 """
 
 import argparse

@@ -1,8 +1,9 @@
 # SVR 2011 launcher
 
-Double-click **SVR 2011.lnk** in the project root. Recreate it after moving the
-project with `./scripts/install-launcher.ps1` from PowerShell 7. The launcher is
-a native WPF window and opens without a terminal or browser server.
+Run `./scripts/install-launcher.ps1` once from PowerShell 7. It creates
+**SVR 2011.lnk** in the project root; double-click that to open the launcher.
+Run the script again after moving the project. The launcher is a native WPF
+window and opens without a terminal or browser server.
 
 Play saves preferences and starts the existing Vulkan build. Settings are stored
 in `userdata/launcher/settings.json`; game saves remain in `userdata/vulkan`.
@@ -19,7 +20,7 @@ inline message and safe defaults without silently overwriting the file.
   does not provide per-device assignment or button remapping.
 - Frame capture records guest frame intervals without attaching Tracy.
 - Keep RivaTuner's frame limiter disabled for this game.
-- Display synchronization defaults to Off, preserving the smooth setup.
+- Display synchronization defaults to Off (recommended).
   Mailbox requests synchronized presentation, falling back to FIFO if unsupported.
   Monitor VSync forces FIFO and limits presentation to the monitor refresh rate.
   These are experimental display options, not arbitrary 60/120 FPS limits, and
@@ -34,7 +35,7 @@ folder, or the analysis folder before the first launch.
 A separate hidden observer owns the game process. Closing the launcher does not
 kill either the observer or the game. No session has an automatic timeout. A
 session mutex and running-process check prevent duplicate launches through the
-Vulkan script. Timing, renderer and cinematic compatibility defaults are retained.
+Vulkan script. Timing and renderer defaults are fixed.
 
 ## Checks
 
