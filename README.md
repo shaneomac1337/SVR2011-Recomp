@@ -20,6 +20,29 @@ See [launcher instructions](launcher/README.md) for settings, logs and checks.
 This project uses locally supplied game data. Original disc images, extracted
 files, generated game translations, tools and build outputs are excluded from Git.
 
+## Portable build for other players
+
+`./scripts/package-portable.ps1` bundles the current Vulkan build into
+`out/portable/SVR2011-<date>-<commit>.zip`. The zip contains a standalone
+launcher (`SVR 2011.exe`, .NET Framework 4.8, which ships with Windows), the
+game executable and runtime DLLs, and the app-local Visual C++ runtime. It needs
+no PowerShell, Python or installer. It contains no game data. On first start,
+players choose their own ISO. The launcher checks all 366 files against
+the verified disc hashes from `analysis/disc.json` and copies them into
+`gamedata/`. Saves, cache and session logs stay beside the launcher. **Bug report**
+zips the latest session with the system and GPU summary. Symbols for each package
+stay local in `out/portable/symbols-<version>/`. Player instructions are in
+[launcher/portable/README.txt](launcher/portable/README.txt).
+
+```powershell
+./scripts/package-portable.ps1
+./tests/test_portable.ps1
+```
+
+The test compiles the launcher and compares its runtime arguments with
+`Launcher.Core.ps1`. It covers extraction and verification with a synthetic disc,
+and checks the real ISO against the manifest when that ISO is present.
+
 ## Reproduce on this Windows machine
 
 Use PowerShell 7 and Python 3. The build script defaults to the existing VS 18
