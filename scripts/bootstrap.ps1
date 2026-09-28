@@ -1,4 +1,4 @@
-param([string]$SevenZipPath = 'D:/tools/7-Zip/7z.exe')
+param([string]$SevenZipPath)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/Invoke-Hidden.ps1"
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -32,7 +32,14 @@ foreach ($artifact in $artifacts) {
         if ($archive.EndsWith('.zip')) {
             Expand-Archive $archive $artifact.Destination
         } else {
-            if (!(Test-Path -LiteralPath $SevenZipPath)) { throw 'Pass -SevenZipPath with the path to 7z.exe.' }
+            if (!$SevenZipPath) {
+                $SevenZipPath = @((Get-Command 7z -ErrorAction SilentlyContinue).Source,
+                    "$env:ProgramFiles/7-Zip/7z.exe", "${env:ProgramFiles(x86)}/7-Zip/7z.exe") |
+                    Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+            }
+            if (!$SevenZipPath -or !(Test-Path -LiteralPath $SevenZipPath)) {
+                throw '7-Zip not found. Install it from https://www.7-zip.org or pass -SevenZipPath with the path to 7z.exe.'
+            }
             Invoke-Hidden $SevenZipPath @('x', $archive, "-o$($artifact.Destination)", '-y')
         }
     }

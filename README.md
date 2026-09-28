@@ -1,153 +1,150 @@
-# SVR 2011 recompilation investigation
+# WWE SmackDown vs. Raw 2011 on PC
 
-Experimental Xbox 360 → Windows recompilation using ReXGlue. The user has confirmed
-smooth One on One gameplay on Vulkan with entrances, finishers and cutscenes
-working. Keep RivaTuner's FPS limiter off. Other match types and higher resolution
-scales are not yet validated; the menu's background fight remains slower.
-See [the performance investigation](docs/performance.md) for measured results and
-[the boot investigation](docs/boot-investigation.md) for earlier failures.
+An unofficial Windows version of the Xbox 360 game, built by recompiling its code
+to native x86-64 with [ReXGlue](https://github.com/rexglue/rexglue-sdk). It is not
+an emulator you load a disc into each time: the game code runs as a normal Windows
+program, and the launcher copies the game files from your disc image once.
 
-## Play with the launcher
+**This repository contains no game files.** You need your own Xbox 360 disc image
+of WWE SmackDown vs. Raw 2011, the USA/Europe release. The launcher checks every
+file against that release and refuses anything else.
 
-Double-click **SVR 2011.lnk** in this folder. The native Windows launcher saves
-display mode, window size, internal resolution, controller support mode and
-optional frame capture. Native resolution is the default; 2× and 3× are marked
-experimental. Closing the launcher does not close the game.
+## What works
 
-To recreate the shortcut, run `./scripts/install-launcher.ps1` in PowerShell 7.
-See [launcher instructions](launcher/README.md) for settings, logs and checks.
+| | |
+| --- | --- |
+| Tested and playable | One on One matches with entrances, finishers and cutscenes; backstage brawls; menus |
+| Not tested yet | Other match types, Create modes, Road to WrestleMania, Universe, online |
+| Tested hardware | Windows 11 with an AMD Radeon RX 7900 XT. Other GPUs and Windows 10 have not been tried. |
 
-This project uses locally supplied game data. Original disc images, extracted
-files, generated game translations, tools and build outputs are excluded from Git.
+The game runs at 60 FPS in the tested modes. Untested modes may crash; an
+[issue](../../issues) with a bug report attached helps fix them.
 
-## Portable build for other players
+## Play it
 
-`./scripts/package-portable.ps1` bundles the current Vulkan build into
-`out/portable/SVR2011-<date>-<commit>.zip`. The zip contains a standalone
-launcher (`SVR 2011.exe`, .NET Framework 4.8, which ships with Windows), the
-game executable and runtime DLLs, and the app-local Visual C++ runtime. It needs
-no PowerShell, Python or installer. It contains no game data. On first start,
-players choose their own ISO. The launcher checks all 366 files against
-the verified disc hashes from `analysis/disc.json` and copies them into
-`gamedata/`. Saves, cache and session logs stay beside the launcher. **Bug report**
-zips the latest session with the system and GPU summary. Symbols for each package
-stay local in `out/portable/symbols-<version>/`. Player instructions are in
-[launcher/portable/README.txt](launcher/portable/README.txt).
+You need:
+
+- Windows 10 or 11, 64-bit (tested on Windows 11)
+- A graphics card with Vulkan support and a current driver
+- About 6 GB of free space for the game files
+- Your disc image (`.iso`) of the USA/Europe Xbox 360 release
+- A controller is recommended
+
+Steps:
+
+1. Download the latest `SVR2011-<date>-<commit>.zip` from [Releases](../../releases).
+2. Extract the whole zip to a normal folder, for example `C:\Games\SVR2011`.
+   Avoid `Program Files` and folder names with accents or non-English letters.
+3. Open `SVR 2011.exe`. If Windows SmartScreen warns about an unknown publisher,
+   choose **More info**, then **Run anyway**. The launcher is not code-signed.
+4. Choose **Browse**, select your `.iso`, then **Set up game files**. The launcher
+   checks all 366 files and copies them into `gamedata`. This takes a few
+   minutes and happens once. Your `.iso` is only read, never changed.
+5. Connect your controller and choose **Play**.
+
+### If something is off
+
+- **Stutter or uneven speed:** turn off any FPS limiter for this game, such as
+  RivaTuner (RTSS). The game paces itself.
+- **Short hitches the first time you see a move or arena:** the game is
+  preparing shaders for your graphics card. They are saved in `cache`, so the
+  same scene is smooth next time.
+- **Image looks soft:** *1x Native* internal resolution is the tested
+  setting. 2x and 3x are sharper but experimental.
+- **Updating to a new version:** your saves are in `userdata`. Copy that folder
+  into the new version's folder before you play.
+- **Crash or wrong graphics:** close the game, choose **Bug report** in the
+  launcher, and attach the zip it highlights to a new [issue](../../issues).
+  The zip holds the session logs, launcher settings, Windows version, processor
+  count, and graphics card with driver version. Log lines can contain folder
+  paths, which may show your Windows user name; check the zip before posting it.
+  It never contains saves or game files.
+
+## Build from source
+
+This is for developers. Players only need the zip above.
+
+You need:
+
+- Windows 10 or 11, 64-bit, and about 25 GB of free space including the `.iso`
+- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)
+- [Python 3](https://www.python.org/downloads/)
+- [Git](https://git-scm.com/download/win)
+- [7-Zip](https://www.7-zip.org), used once to unpack LLVM
+- Visual Studio 2026 Build Tools with the *Desktop development with C++*
+  workload, which includes CMake, Ninja and the Windows SDK
+
+Run these in PowerShell 7 from the repository folder, with your `.iso` copied
+into it:
 
 ```powershell
-./scripts/package-portable.ps1
-./tests/test_portable.ps1
-```
-
-The test compiles the launcher and compares its runtime arguments with
-`Launcher.Core.ps1`. It covers extraction and verification with a synthetic disc,
-and checks the real ISO against the manifest when that ISO is present.
-
-## Reproduce on this Windows machine
-
-Use PowerShell 7 and Python 3. The build script defaults to the existing VS 18
-BuildTools and Windows SDK paths on this machine; pass `-VisualStudioRoot` and
-`-WindowsSdkRoot` for other installations. LLVM and ReXGlue are extracted into
-`.tools/`, without running a system installer.
-
-```powershell
+# Download pinned ReXGlue and LLVM releases into .tools (SHA-256 checked)
 ./scripts/bootstrap.ps1
+
+# Verify the disc and extract its files into assets
 python scripts/inspect_disc.py 'WWE SmackDown vs. Raw 2011 (USA, Europe).iso' --extract-all assets
+
+# Translate the game's PowerPC code to C++ in generated/
 ./scripts/build.ps1 -Action Codegen
-./scripts/build.ps1 -Action Configure
-./scripts/build.ps1 -Action Build
-./scripts/smoke.ps1 -Seconds 60 -GpuDiagnostics
-```
 
-`bootstrap.ps1` needs 7-Zip to unpack LLVM (default `D:/tools/7-Zip/7z.exe`;
-override with `-SevenZipPath`). Downloads are pinned and SHA-256 checked against
-the release asset digests. The original ISO is read only. Repeated extraction
-verifies existing files and refuses to overwrite differing contents.
-
-The build accepts only the recorded XEX fingerprint. Supporting another revision
-requires fresh analysis rather than reusing addresses blindly.
-
-`smoke.ps1` records its exit status in a timestamped directory under `analysis/`.
-It defaults to `-Adapter Warp` (`--d3d12_adapter=-2`), which uses Microsoft's CPU
-renderer. This is a diagnostic fallback, not a hardware-renderer fix. The earlier
-software test also produced poor performance and a user-reported black screen;
-it is not a usable gameplay workaround. The earlier
-direct launch command selects hardware and can reproduce the driver hang.
-`-Adapter Hardware` remains available for deliberate future investigation, but
-has not been re-tested since the device hang. `-GpuDiagnostics` requests D3D12
-debugging and DRED; the debug layer is currently absent on this machine, while
-DRED initializes successfully.
-It forcibly stops its own process at the deadline. That is a diagnostic timeout,
-not a successful gameplay test. The SDK's `--headless` suppresses prompts; a
-graphics window may still appear. Command-line child processes use hidden launch.
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-## Vulkan build and launch
-
-The Vulkan build uses the same ReXGlue v0.10.0 commit and generated game code,
-with `REXGLUE_USE_VULKAN=ON` and `REXGLUE_USE_D3D12=OFF`. Its executable and
-DLLs live in `out/build/win-amd64-relwithdebinfo-vulkan/`. The existing D3D12
-build is preserved. No system Vulkan SDK or driver installation is needed.
-
-After the initial bootstrap, extraction and code generation above:
-
-```powershell
+# Fetch the ReXGlue sources for the Vulkan runtime and build the game
 ./scripts/prepare-vulkan.ps1
 ./scripts/build.ps1 -Renderer Vulkan -Action Configure
 ./scripts/build.ps1 -Renderer Vulkan -Action Build -Jobs 6
+
+# Play
 ./scripts/play-vulkan.ps1
 ```
 
-Use `./scripts/play-vulkan.ps1 -PerfCapture` to record guest frame intervals and
-runtime counters to `perf.csv` alongside the run log. Close the game before
-reading the CSV: the SDK holds the file exclusively on Windows. Frame intervals
-measure guest swap submissions, unlike an external presentation-FPS overlay.
-The optional capture does not change game timing or renderer settings.
+Always pass `-Renderer Vulkan`. The D3D12 renderer is the script default for
+historical reasons and hangs on the tested GPU.
 
-The [performance investigation](docs/performance.md) records baseline timings,
-the user-validated texture compatibility setting (now enabled by default),
-profiling commands, and acceptance criteria for the One on One path.
-Use `-Experiment Baseline` to compare without that texture setting, or `-Profile`
-to enable an on-demand Tracy connection. Smooth gameplay still needs validation.
+If Build Tools or the Windows SDK are not in their default locations, pass
+`-VisualStudioRoot` and `-WindowsSdkRoot` to `build.ps1`. If 7-Zip is not on
+PATH or in Program Files, pass `-SevenZipPath` to `bootstrap.ps1`.
 
-For the current Vulkan build, leave the RivaTuner FPS limiter disabled for
-`svr2011.exe`: the user reported smooth match gameplay after disabling it, and
-the subsequent capture includes seven minutes at 60.002 guest FPS with a maximum
-frame interval of 23.1 ms. The external overlay measures presentation and may
-show much higher FPS. Background-fight performance and repeated match validation
-remain open; see the performance investigation above.
+Other useful commands:
 
-The launcher opens the game without an additional console window and records
-logs under `analysis/vulkan-play-<timestamp>/`. Close the game window to stop.
-The PowerShell launcher waits without a timeout, then reports normal exit or a
-crash and saves `result.json`. It never terminates the game. Use this launcher for
-interactive testing; `smoke.ps1` intentionally has a deadline and is unsuitable
-for an open-ended play session.
-Vulkan uses separate `cache/vulkan/` and `userdata/vulkan/` directories, so its
-first launch has fresh settings and saves. It selects a Vulkan GPU automatically;
-check the runtime log for the selected adapter. There is no D3D12 fallback in
-this build. Rendering remains experimental; reaching a menu does not establish
-gameplay stability.
+| Command | What it does |
+| --- | --- |
+| `./scripts/install-launcher.ps1` | Creates `SVR 2011.lnk`, a settings window for this checkout |
+| `./scripts/play-vulkan.ps1 -PerfCapture` | Records every frame time to `perf.csv` in the session folder |
+| `./scripts/package-portable.ps1` | Builds the player zip in `out/portable/` |
+| `python -m unittest discover -s tests -v` | Runs the Python tests |
+| `./tests/test_portable.ps1` | Checks the portable launcher, including disc setup with a synthetic image |
 
-For a bounded diagnostic run that terminates its own process after 60 seconds:
+Every play session writes its log, settings and exit result to
+`analysis/vulkan-play-<timestamp>/`.
 
-```powershell
-./scripts/smoke.ps1 -Renderer Vulkan -Seconds 60
-```
+## How it works
 
-`-Adapter Warp` is rejected for Vulkan. `-GpuDiagnostics` requests Vulkan
-validation (requires separately available validation layers); the normal test
-does not require those layers. `prepare-vulkan.ps1` materializes libmspack's
-source symlink stubs on Windows and refuses to overwrite edited source files.
+1. `inspect_disc.py` reads the Xbox 360 disc image and extracts `default.xex`
+   and the game data. The build accepts only the known executable (SHA-256
+   `6aead4cb…d3ebc1`).
+2. ReXGlue translates the executable's PowerPC code to C++ ahead of time.
+   `svr2011_manifest.toml` lists functions the automatic pass misses.
+3. The generated code links against the ReXGlue runtime, which provides the
+   Xbox 360 kernel, audio, input and a Vulkan GPU backend derived from
+   [Xenia](https://github.com/xenia-project/xenia).
+4. `patches/` holds this project's fixes to that runtime. The build applies them
+   automatically:
+   - `rexglue-xmp-no-delay.patch` removes a 10 ms music-player delay that held
+     menus and backstage brawls to about 45 FPS
+   - `rexglue-window-restore.patch` fixes a black window after minimizing
+   - `rexglue-async-pipelines.patch` adds an optional switch for fewer shader
+     hitches, off by default
 
-## Dependencies
+The investigation notes in [`docs/`](docs) record what was measured and why each
+default was chosen, including [performance](docs/performance.md) and
+[boot](docs/boot-investigation.md) history.
 
-- [ReXGlue v0.10.0](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0)
-- [LLVM 21.1.8](https://github.com/llvm/llvm-project/releases/tag/llvmorg-21.1.8)
-- Microsoft C++ headers/libraries, Windows SDK, CMake and Ninja from BuildTools
+## Legal
 
-The application scaffold and `generated/rexglue.cmake` originate from ReXGlue's
-project templates. See `third_party/rexglue-LICENSE.txt` for their license.
+This project is not affiliated with or endorsed by THQ, Yuke's, WWE or
+Microsoft. This repository contains no game code or data; the build generates
+both from a disc image you own. Do not share the `gamedata` or `assets` folders or any disc
+image.
+
+ReXGlue is used under its license, included in
+[`third_party/rexglue-LICENSE.txt`](third_party/rexglue-LICENSE.txt). The
+project scaffold and `generated/rexglue.cmake` come from ReXGlue's templates.
