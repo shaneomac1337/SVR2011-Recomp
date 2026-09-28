@@ -145,6 +145,7 @@ Microsoft. This repository contains no game code or data; the build generates
 both from a disc image you own. Do not share the `gamedata` or `assets` folders or any disc
 image.
 
-ReXGlue is used under its license, included in
+This project's own code is under the BSD 3-Clause license in
+[`LICENSE`](LICENSE). ReXGlue is used under its license, included in
 [`third_party/rexglue-LICENSE.txt`](third_party/rexglue-LICENSE.txt). The
 project scaffold and `generated/rexglue.cmake` come from ReXGlue's templates.
