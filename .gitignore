@@ -18,3 +18,5 @@ __pycache__/
 
 # Local slop-audit checklists
 /anti-slop/
+# Merged shader cache for the player package (translated game shaders)
+/shader-cache/

@@ -42,8 +42,9 @@ TIPS
   set its limit to exactly 60 or off; any other value makes it stutter.
 - "1x Native" internal resolution is the tested setting. 2x and 3x look
   sharper but are experimental.
-- The first minutes of play can have short hitches while shaders are
-  prepared for your graphics card. This gets better the more you play.
+- Shaders for the tested modes come prebuilt and are prepared while the
+  game starts. A scene nobody has tested yet can hitch briefly the first
+  time; it is saved in the "cache" folder and smooth from then on.
 - Your saves are in the "userdata" folder. Back it up before replacing this
   folder with a newer version, then copy it into the new folder.
 

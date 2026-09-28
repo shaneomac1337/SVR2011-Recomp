@@ -48,9 +48,10 @@ Steps:
   itself to 60 FPS like the console, so no external limiter is needed. If you
   use RivaTuner (RTSS) anyway, set its limit to exactly 60 or off; any other
   value stutters.
-- **Short hitches the first time you see a move or arena:** the game is
-  preparing shaders for your graphics card. They are saved in `cache`, so the
-  same scene is smooth next time.
+- **A short hitch the first time you see a new move or arena:** the release
+  includes prebuilt shaders for the tested modes, which the game prepares while
+  it starts. Anything else compiles the first time it appears, is saved in
+  `cache`, and is smooth from then on.
 - **Image looks soft:** *1x Native* internal resolution is the tested
   setting. 2x and 3x are sharper but experimental.
 - **Updating to a new version:** your saves are in `userdata`. Copy that folder
@@ -111,6 +112,7 @@ Other useful commands:
 | --- | --- |
 | `./scripts/install-launcher.ps1` | Creates `SVR 2011.lnk`, a settings window for this checkout |
 | `./scripts/play-vulkan.ps1 -PerfCapture` | Records every frame time to `perf.csv` in the session folder |
+| `python scripts/merge_shader_cache.py shader-cache <cache folders>` | Merges the shader caches of test sessions into `shader-cache/`, which the player zip ships |
 | `./scripts/package-portable.ps1` | Builds the player zip in `out/portable/` |
 | `python -m unittest discover -s tests -v` | Runs the Python tests |
 | `./tests/test_portable.ps1` | Checks the portable launcher, including disc setup with a synthetic image |

@@ -71,6 +71,15 @@ $stream = [IO.File]::Create($icon)
 try { $extracted.Save($stream) } finally { $stream.Dispose(); $extracted.Dispose() }
 Build-PortableLauncher "$stage/SVR 2011.exe" $icon
 Copy-Item -LiteralPath "$projectRoot/launcher/portable/README.txt" -Destination "$stage/README.txt"
+# Prebuilt shaders from test sessions (scripts/merge_shader_cache.py): the first launch
+# builds these pipelines at startup instead of compiling them mid-game.
+$shaderCache = "$projectRoot/shader-cache"
+if (Test-Path -LiteralPath "$shaderCache/5451085D.fsi.vk.xpso") {
+    New-Item -ItemType Directory -Force "$stage/cache/shaders/shareable" | Out-Null
+    Copy-Item -LiteralPath "$shaderCache/5451085D.xsh", "$shaderCache/5451085D.fsi.vk.xpso" -Destination "$stage/cache/shaders/shareable"
+} else {
+    Write-Warning 'No shader-cache folder; players will compile every shader during play.'
+}
 
 # Symbols stay local so crash reports from this exact build can be symbolized.
 $symbols = "$portableRoot/symbols-$version"
