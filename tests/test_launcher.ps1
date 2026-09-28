@@ -32,13 +32,17 @@ try {
             Assert ($argsForMode -contains '--vulkan_allow_present_mode_fifo_relaxed=false') 'FIFO did not disable relaxed FIFO.'
         }
     }
-    foreach ($case in @(@('Even', 'true'), @('Game', 'false'))) {
+    foreach ($case in @(@('Auto', 'true'), @('Game', 'false'))) {
         $value = New-SvrSettings
         $value.framePacing = $case[0]
         Assert ((Get-SvrDisplayArguments $value) -contains "--present_pace_to_guest_vblank=$($case[1])") "Wrong pacing for $($case[0])."
     }
-    $auto = [string](Test-SvrPacesToGuestVblank (New-SvrSettings)).ToString().ToLowerInvariant()
-    Assert ((Get-SvrDisplayArguments (New-SvrSettings)) -contains "--present_pace_to_guest_vblank=$auto") 'Automatic pacing mismatch.'
+    $legacy = Join-Path ([IO.Path]::GetTempPath()) "svr-even-$PID.json"
+    try {
+        '{"version":1,"displayMode":"Windowed","windowSize":"1280x720","scale":1,"controller":"Auto","perfCapture":false,"presentation":"Fifo","framePacing":"Even"}' |
+            Set-Content -LiteralPath $legacy
+        Assert ((Read-SvrSettings $legacy).framePacing -eq 'Auto') 'Saved Even pacing did not load as Automatic.'
+    } finally { Remove-Item -LiteralPath $legacy -ErrorAction SilentlyContinue }
     $bad = New-SvrSettings
     $bad.framePacing = 'Fast'
     $threw = $false; try { Test-SvrSettings $bad } catch { $threw = $true }

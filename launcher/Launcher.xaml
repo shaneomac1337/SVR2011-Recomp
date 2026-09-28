@@ -63,7 +63,7 @@
           <ComboBox x:Name="Presentation" AutomationProperties.Name="Display synchronization"><ComboBoxItem Content="VSync · Recommended" Tag="Fifo"/><ComboBoxItem Content="Off · Lowest latency, may tear" Tag="Immediate"/><ComboBoxItem Content="Adaptive · Mailbox (test)" Tag="Mailbox"/></ComboBox>
           <TextBlock x:Name="PresentationHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>
           <Label Content="Fra_me pacing" Target="{Binding ElementName=FramePacing}" Margin="0,20,0,0"/>
-          <ComboBox x:Name="FramePacing" AutomationProperties.Name="Frame pacing"><ComboBoxItem Content="Automatic · Recommended" Tag="Auto"/><ComboBoxItem Content="Match game timing" Tag="Game"/><ComboBoxItem Content="Even 60 Hz" Tag="Even"/></ComboBox>
+          <ComboBox x:Name="FramePacing" AutomationProperties.Name="Frame pacing"><ComboBoxItem Content="Even 60 Hz · Recommended" Tag="Auto"/><ComboBoxItem Content="As soon as finished" Tag="Game"/></ComboBox>
           <TextBlock x:Name="FramePacingHelp" Foreground="#535D72" FontSize="12" Margin="0,7,0,0"/>
           <Label Content="_Controller support" Target="{Binding ElementName=Controller}" Margin="0,20,0,0"/>
           <ComboBox x:Name="Controller" AutomationProperties.Name="Controller support"><ComboBoxItem Content="Automatic · Standard controller support" Tag="Auto"/><ComboBoxItem Content="Xbox compatibility · XInput" Tag="Xbox"/></ComboBox>

@@ -36,12 +36,9 @@ function Update-DisplayHelp {
         'Immediate' { 'Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear.' }
         default { 'Each frame lands on a display refresh, without tearing. No FPS limiter needed.' }
     }
-    $refresh = Get-SvrPrimaryRefreshHz
-    $ui.FramePacingHelp.Text = switch ($ui.FramePacing.SelectedItem.Tag) {
-        'Game' { 'Shows each frame as soon as the game finishes it. Smoothest motion with FreeSync, G-Sync or a high refresh rate.' }
-        'Even' { 'Holds each frame for an even 60 Hz beat. Best on a 60 Hz monitor without FreeSync or G-Sync.' }
-        default { "Your main monitor runs at $refresh Hz, so this uses $(if ($refresh -lt 100) { 'even 60 Hz pacing' } else { "the game's own timing" })." }
-    }
+    $ui.FramePacingHelp.Text = if ($ui.FramePacing.SelectedItem.Tag -eq 'Game') {
+        'Shows each frame the moment the game finishes it. Frames arrive 13-21 ms apart, so motion is less even.'
+    } else { 'Shows every frame on an even 60 Hz beat, a few milliseconds after the game finishes it. Smoothest on every monitor.' }
 }
 function Show-Settings($Value) {
     $script:loading = $true

@@ -46,7 +46,11 @@ if ($settings) {
     foreach ($argument in (Get-SvrDisplayArguments $settings)) { $info.ArgumentList.Add($argument) }
     if ($settings.perfCapture) { $PerfCapture = $true }
 }
-if ($PerfCapture) { $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv") }
+if ($PerfCapture) {
+    $info.ArgumentList.Add("--perf_log_csv=$run/perf.csv")
+    # Host presents, one row each; only written while frames are paced on the guest vblank.
+    $info.ArgumentList.Add("--present_pacing_log=$run/present.csv")
+}
 if ($Profile) { $info.ArgumentList.Add('--svr_profile=true') }
 if ($SynchronousShaders) { $info.ArgumentList.Add('--async_shader_compilation=false') }
 # Keyboard-to-controller emulation lets automated loops drive menus.

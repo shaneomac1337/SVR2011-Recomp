@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -53,6 +52,8 @@ namespace Svr2011Launcher
             // Older version-one files predate display synchronization controls.
             settings.Presentation = values.ContainsKey("presentation") ? Require<string>(values, "presentation") : "Fifo";
             settings.FramePacing = values.ContainsKey("framePacing") ? Require<string>(values, "framePacing") : "Auto";
+            // "Even" was a separate choice until Automatic became even pacing on every monitor.
+            if (settings.FramePacing == "Even") settings.FramePacing = "Auto";
             settings.Validate();
             return settings;
         }
@@ -115,33 +116,11 @@ namespace Svr2011Launcher
             };
         }
 
-        // The game moves things by measured time, so frames look smoothest shown as soon as they
-        // are finished. Only a 60 Hz display without variable refresh needs them held to the tick.
+        // The game advances a fixed step per frame, so each frame belongs on an even 60 Hz beat. The
+        // runtime shows it 5 ms after its vblank, just after the game finishes it, on every display.
         public bool PacesToGuestVblank()
         {
-            if (FramePacing == "Auto") return PrimaryRefreshHz() < 100;
-            return FramePacing == "Even";
-        }
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        struct DevMode
-        {
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
-            public short SpecVersion, DriverVersion, Size, DriverExtra;
-            public int Fields, PositionX, PositionY, Orientation, FixedOutput;
-            public short Color, Duplex, YResolution, TTOption, Collate;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
-            public short LogPixels;
-            public int BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
-        }
-
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        static extern bool EnumDisplaySettings(string device, int mode, ref DevMode devMode);
-
-        public static int PrimaryRefreshHz()
-        {
-            var mode = new DevMode { Size = (short)Marshal.SizeOf(typeof(DevMode)) };
-            return EnumDisplaySettings(null, -1, ref mode) ? mode.DisplayFrequency : 60;
+            return FramePacing != "Game";
         }
 
         static string Lower(bool value) { return value ? "true" : "false"; }

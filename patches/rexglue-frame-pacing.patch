@@ -12,7 +12,7 @@ index 30b207d..841fd5e 100644
  void Sleep(std::chrono::duration<Rep, Period> duration) {
    Sleep(std::chrono::duration_cast<std::chrono::microseconds>(duration));
 diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
-index afb4a30..ee1016f 100644
+index afb4a30..c4cb340 100644
 --- a/include/rex/ui/presenter.h
 +++ b/include/rex/ui/presenter.h
 @@ -13,6 +13,7 @@
@@ -47,7 +47,7 @@ index afb4a30..ee1016f 100644
    void HandleUIDrawersChangeFromUIThread(bool drawers_were_empty);
  
    bool AreUITicksNeededFromUIThread() const {
-@@ -1051,6 +1062,19 @@ class Presenter {
+@@ -1051,6 +1062,21 @@ class Presenter {
  
    std::thread dxgi_ui_tick_thread_;
  #endif  // XE_PLATFORM
@@ -60,6 +60,8 @@ index afb4a30..ee1016f 100644
 +  std::chrono::steady_clock::duration guest_output_pacing_vblank_period_{};
 +  bool guest_output_pacing_shutdown_ = false;
 +  std::atomic<bool> guest_output_paced_frame_pending_{false};
++  // steady_clock ticks when the pending frame was submitted, for the pacing log.
++  std::atomic<int64_t> guest_output_paced_frame_arrival_{0};
 +  std::atomic<uint32_t> guest_output_paced_frames_replaced_{0};
 +  std::atomic<uint32_t> host_presents_{0};
 +  // Window-thread paints by trigger: forced by the window, UI drawers, requested, outdated.
@@ -196,15 +198,16 @@ index 53b8c0b..a07e12d 100644
      }
      toast = queue_.front();
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index 7360ed9..bd614c3 100644
+index 7360ed9..fe6cabb 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
-@@ -12,12 +12,15 @@
+@@ -12,12 +12,16 @@
  #include <algorithm>
  #include <atomic>
  #include <cctype>
 +#include <chrono>
 +#include <cmath>
++#include <cstdio>
  #include <utility>
  
  #include <rex/assert.h>
@@ -215,7 +218,7 @@ index 7360ed9..bd614c3 100644
  #include <rex/ui/presenter.h>
  #include <rex/ui/window.h>
  
-@@ -85,6 +88,14 @@ REXCVAR_DEFINE_BOOL(present_allow_overscan_cutoff, false, "UI/Presenter",
+@@ -85,6 +89,24 @@ REXCVAR_DEFINE_BOOL(present_allow_overscan_cutoff, false, "UI/Presenter",
                      "Allow overscan cutoff based on safe area settings")
      .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
  
@@ -226,11 +229,21 @@ index 7360ed9..bd614c3 100644
 +REXCVAR_DEFINE_BOOL(present_pacing_stats, false, "UI/Presenter",
 +                    "Log paced presentation intervals, repeated vblanks and replaced frames "
 +                    "every 5 seconds");
++REXCVAR_DEFINE_STRING(present_pacing_log, "", "UI/Presenter",
++                      "CSV file receiving one row per paced presentation (empty = off)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++// SvR 2011 submits frames 1.5 ms (median) and 3.7 ms (p99.9) after the vblank; 5 ms catches
++// all but a handful while cutting ~12 ms of latency compared with the next vblank.
++REXCVAR_DEFINE_INT32(present_pacing_offset_us, 5000, "UI/Presenter",
++                     "Present each paced frame this many microseconds after the guest vblank it "
++                     "follows; 0 = on the next vblank. Lower values cut latency, but frames that "
++                     "finish later than the offset wait a whole extra vblank")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 +
  namespace {
  using GuestOutputPaintConfig = rex::ui::Presenter::GuestOutputPaintConfig;
  
-@@ -286,6 +297,7 @@ Presenter::~Presenter() {
+@@ -286,6 +308,7 @@ Presenter::~Presenter() {
    // No intrusive lifetime management must be performed from UI drawers - defer
    // it if needed.
    assert_false(is_executing_ui_drawers_);
@@ -238,7 +251,7 @@ index 7360ed9..bd614c3 100644
  
  #if REX_PLATFORM_WIN32
    if (dxgi_ui_tick_thread_.joinable()) {
-@@ -446,9 +458,16 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -446,9 +469,16 @@ void Presenter::PaintFromUIThread(bool force_paint) {
    // Reset ui_thread_paint_requested_ unconditionally also, regardless of
    // whether the UI needs to be drawn - the flag may be set to try reconnecting,
    // for example.
@@ -256,7 +269,7 @@ index 7360ed9..bd614c3 100644
    PaintResult paint_result = PaintResult::kNotPresented;
    bool request_repaint_at_tick = false;
    bool request_repaint_immediately = false;
-@@ -613,6 +632,143 @@ bool Presenter::RefreshGuestOutput(
+@@ -613,6 +643,177 @@ bool Presenter::RefreshGuestOutput(
      guest_output_mailbox_writable_ = (3 - last_acquired - guest_output_mailbox_writable_) % 3;
    }
  
@@ -267,6 +280,8 @@ index 7360ed9..bd614c3 100644
 +        guest_output_pacing_thread_ = std::thread([this]() { GuestOutputPacingThread(); });
 +      }
 +    }
++    guest_output_paced_frame_arrival_.store(
++        std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
 +    if (guest_output_paced_frame_pending_.exchange(true, std::memory_order_acq_rel)) {
 +      guest_output_paced_frames_replaced_.fetch_add(1, std::memory_order_relaxed);
 +    }
@@ -311,14 +326,24 @@ index 7360ed9..bd614c3 100644
 +void Presenter::GuestOutputPacingThread() {
 +  rex::thread::set_current_thread_name("Guest Output Pacing");
 +  using Clock = std::chrono::steady_clock;
-+  // Guest frames arrive shortly after each vblank, so present exactly on the tick: wake ahead
-+  // of the predicted tick and spin the last stretch. Waking on the vblank signal instead lands
++  // Guest frames arrive shortly after each vblank. Present each one at a fixed offset after its
++  // vblank (by default the next tick): wake ahead of that moment and spin the last stretch. Waking on the vblank signal instead lands
 +  // up to ~0.7 ms late and varies. This is not a guest thread, so spinning here does not take
 +  // time from pinned guest cores.
 +  constexpr auto kWakeAhead = std::chrono::microseconds(1000);
 +  Clock::time_point last_target{};
 +  Clock::time_point last_present{}, window_start = Clock::now();
-+  uint32_t presents = 0, repeated_vblanks = 0;
++  uint32_t presents = 0, repeated_vblanks = 0, repeated_since_present = 0;
++  std::FILE* log = nullptr;
++  if (!REXCVAR_GET(present_pacing_log).empty()) {
++    log = std::fopen(REXCVAR_GET(present_pacing_log).c_str(), "w");
++    if (log) {
++      std::fputs("present_us,interval_us,repeated_vblanks,arrival_after_vblank_us,latency_us\n",
++                 log);
++    }
++  }
++  const Clock::time_point log_origin = Clock::now();
++  Clock::time_point last_logged_present{};
 +  double interval_sum_ms = 0.0, interval_square_sum_ms = 0.0, interval_max_ms = 0.0;
 +  while (true) {
 +    Clock::time_point vblank_time;
@@ -329,6 +354,9 @@ index 7360ed9..bd614c3 100644
 +        return guest_output_pacing_shutdown_ || guest_output_pacing_vblank_count_ >= 2;
 +      });
 +      if (guest_output_pacing_shutdown_) {
++        if (log) {
++          std::fclose(log);
++        }
 +        return;
 +      }
 +      vblank_time = guest_output_pacing_vblank_time_;
@@ -337,8 +365,12 @@ index 7360ed9..bd614c3 100644
 +    if (period <= Clock::duration::zero()) {
 +      continue;
 +    }
-+    // The next tick after the last one presented, anchored to the latest ideal vblank time.
-+    Clock::time_point target = vblank_time + period;
++    Clock::duration offset = period;
++    if (int32_t offset_us = REXCVAR_GET(present_pacing_offset_us); offset_us > 0) {
++      offset = std::min<Clock::duration>(std::chrono::microseconds(offset_us), period);
++    }
++    // The next present moment after the last one, anchored to the latest ideal vblank time.
++    Clock::time_point target = vblank_time + offset;
 +    while (target <= last_target + period / 2) {
 +      target += period;
 +    }
@@ -359,9 +391,24 @@ index 7360ed9..bd614c3 100644
 +    last_target = target;
 +    if (!guest_output_paced_frame_pending_.exchange(false, std::memory_order_acq_rel)) {
 +      ++repeated_vblanks;
++      ++repeated_since_present;
 +      continue;
 +    }
 +    PresentLatestGuestOutput();
++    if (log) {
++      Clock::time_point presented = Clock::now();
++      auto us = [](Clock::duration d) {
++        return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(d).count());
++      };
++      Clock::time_point arrival{Clock::duration(
++          guest_output_paced_frame_arrival_.load(std::memory_order_relaxed))};
++      // Negative when the frame missed its own vblank's present moment and waited a tick.
++      std::fprintf(log, "%lld,%lld,%u,%lld,%lld\n", us(presented - log_origin),
++                   last_logged_present == Clock::time_point{} ? 0LL : us(presented - last_logged_present),
++                   repeated_since_present, us(arrival - (target - offset)), us(presented - arrival));
++      last_logged_present = presented;
++    }
++    repeated_since_present = 0;
 +    if (!REXCVAR_GET(present_pacing_stats)) {
 +      continue;
 +    }
@@ -400,7 +447,7 @@ index 7360ed9..bd614c3 100644
    // Trigger the presentation on the host.
    PaintResult paint_result = PaintResult::kNotPresented;
    {
-@@ -645,8 +801,6 @@ bool Presenter::RefreshGuestOutput(
+@@ -645,8 +846,6 @@ bool Presenter::RefreshGuestOutput(
        host_gpu_loss_callback_(false, false);
      }
    }
@@ -409,7 +456,7 @@ index 7360ed9..bd614c3 100644
  }
  
  void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConfig& new_config) {
-@@ -1313,9 +1467,10 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
+@@ -1313,9 +1512,10 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
    if (!REXCVAR_GET(host_present_from_non_ui_thread)) {
      return PaintMode::kUIThreadOnRequest;
    }
@@ -422,7 +469,7 @@ index 7360ed9..bd614c3 100644
      return PaintMode::kUIThreadOnRequest;
    }
    if (!ui_drawers_.empty()) {
-@@ -1498,6 +1653,9 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
+@@ -1498,6 +1698,9 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
    assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
    assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
    PaintResult result = PaintAndPresentImpl(execute_ui_drawers);

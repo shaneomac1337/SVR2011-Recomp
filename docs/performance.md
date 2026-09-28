@@ -7,8 +7,10 @@ Status (2026-09-28):
 - The character-select flicker is fixed by FSI (see "Resolved: render-target path").
 - The 42–46 FPS menus and backstage are fixed by the XMP patch (see "Backstage
   brawl frame pacing").
-- Open: other match types are untested, first-seen shaders still cause brief
-  hitches, and the async pipeline switch has not been validated.
+- Frames are paced evenly at 60 Hz, 5 ms after each guest vblank, on every
+  display (see "Even pacing with a 5 ms present offset").
+- Open: other match types are untested, and first-seen shaders still cause one
+  held frame per compile burst (see "Shader cache in the player package").
 
 This file is a dated log; earlier sections are kept as written. Capture folders,
 screenshots and helper scripts under `analysis/` are local to the test PC
@@ -601,3 +603,35 @@ pipelines at startup in about 6 seconds and compiled none in 6.5 minutes of play
 held frame per compile burst (up to 150 ms at the start of an entrance) instead
 of a 40–70 ms stall per pipeline; every one of them was already in the shipped
 cache.
+
+## Even pacing with a 5 ms present offset (2026-09-28)
+
+The game does not move objects by measured time, contrary to the note in "Frame
+pacing at 60 FPS". The translated code keeps a frame-rate block at `0x82EDDBE8`
+whose step per frame (`+60`: 1.0 at 60 FPS, 2.0 at 30) is read at about 450
+sites, and entrances run at 30 FPS because `sub_826E1C88` halves that rate. The
+`mftb` reads are mostly the graphics library, loop statistics and audio.
+
+The reason even pacing felt worse was latency. With `--present_pacing_log`
+(one row per paced present, written by `-PerfCapture`), frames arrived 1.5 ms
+(median), 3.2 ms (p99) and 3.7 ms (p99.9) after their vblank but were held until
+the next one: 15.4 ms median from finished frame to present
+(`analysis/bench-arrival-1`). `--present_pacing_offset_us` presents each frame a
+fixed time after its own vblank instead; at 5000 the median latency is 3.3 ms
+(p99 4.8 ms), no frame of about 19,000 missed the moment, and the present
+spacing is unchanged (p99 16.88 ms; `analysis/bench-offset5-1`).
+
+In a blind A/B on the 360 Hz FreeSync test display, both with Immediate
+presentation, the tester picked even pacing with the offset over showing frames
+as they finish. The game-timing session also had three guest frames over 50 ms
+(up to 68 ms) that the paced one did not. The runtime now defaults to a 5 ms
+offset, and the launchers' Automatic frame pacing paces on every display; "As
+soon as finished" remains for comparison, and saved "Even 60 Hz" choices load as
+Automatic.
+
+`scripts/benchmark_gate.py <run>` checks a capture: after 20 s of warm-up, 60 FPS
+scenes must reach 59.9 FPS with no frame over 50 ms, and paced presents must
+have a p99 of at most 17.5 ms. Stretches the game runs at 30 FPS are reported
+separately. The first baseline (`analysis/bench-baseline-1`: title, One on One
+with entrances, 3 minutes of play) passed with presents at 60.002 FPS, p99
+16.88 ms and max 18.5 ms.

@@ -21,6 +21,8 @@ function Read-SvrSettings([string]$Path) {
     # Older version-one files predate display synchronization controls.
     if (!$settings.Contains('presentation')) { $settings.presentation = 'Fifo' }
     if (!$settings.Contains('framePacing')) { $settings.framePacing = 'Auto' }
+    # 'Even' was a separate choice until Automatic became even pacing on every monitor.
+    if ($settings.framePacing -eq 'Even') { $settings.framePacing = 'Auto' }
     Test-SvrSettings $settings
     return $settings
 }
@@ -55,35 +57,8 @@ function Get-SvrDisplayArguments($Settings) {
     '--present_pace_to_guest_vblank=' + (Test-SvrPacesToGuestVblank $Settings).ToString().ToLowerInvariant()
 }
 
-# The game moves things by measured time, so frames look smoothest shown as soon as they are
-# finished. Only a 60 Hz display without variable refresh needs them held to the tick.
+# The game advances a fixed step per frame, so each frame belongs on an even 60 Hz beat. The
+# runtime shows it 5 ms after its vblank, just after the game finishes it, on every display.
 function Test-SvrPacesToGuestVblank($Settings) {
-    if ($Settings.framePacing -eq 'Auto') { return (Get-SvrPrimaryRefreshHz) -lt 100 }
-    return $Settings.framePacing -eq 'Even'
-}
-
-function Get-SvrPrimaryRefreshHz {
-    if (!('SvrDisplay' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System; using System.Runtime.InteropServices;
-public static class SvrDisplay {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  struct DevMode {
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
-    public short SpecVersion, DriverVersion, Size, DriverExtra;
-    public int Fields, PositionX, PositionY, Orientation, FixedOutput;
-    public short Color, Duplex, YResolution, TTOption, Collate;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
-    public short LogPixels;
-    public int BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
-  }
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplaySettings(string device, int mode, ref DevMode devMode);
-  public static int PrimaryRefreshHz() {
-    var mode = new DevMode { Size = (short)Marshal.SizeOf(typeof(DevMode)) };
-    return EnumDisplaySettings(null, -1, ref mode) ? mode.DisplayFrequency : 60;
-  }
-}
-'@
-    }
-    [SvrDisplay]::PrimaryRefreshHz()
+    return $Settings.framePacing -ne 'Game'
 }

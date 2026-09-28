@@ -366,16 +366,9 @@ namespace Svr2011Launcher
                 case "Immediate": Text("PresentationHelp").Text = "Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear."; break;
                 default: Text("PresentationHelp").Text = "Each frame lands on a display refresh, without tearing. No FPS limiter needed."; break;
             }
-            var refresh = LauncherSettings.PrimaryRefreshHz();
-            switch (Tag(Combo("FramePacing")))
-            {
-                case "Game": Text("FramePacingHelp").Text = "Shows each frame as soon as the game finishes it. Smoothest motion with FreeSync, G-Sync or a high refresh rate."; break;
-                case "Even": Text("FramePacingHelp").Text = "Holds each frame for an even 60 Hz beat. Best on a 60 Hz monitor without FreeSync or G-Sync."; break;
-                default:
-                    Text("FramePacingHelp").Text = string.Format("Your main monitor runs at {0} Hz, so this uses {1}.", refresh,
-                        refresh < 100 ? "even 60 Hz pacing" : "the game's own timing");
-                    break;
-            }
+            Text("FramePacingHelp").Text = Tag(Combo("FramePacing")) == "Game"
+                ? "Shows each frame the moment the game finishes it. Frames arrive 13-21 ms apart, so motion is less even."
+                : "Shows every frame on an even 60 Hz beat, a few milliseconds after the game finishes it. Smoothest on every monitor.";
         }
 
         void SetDirty()
