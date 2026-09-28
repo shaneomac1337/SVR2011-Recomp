@@ -3,6 +3,7 @@
 #include <rex/rex_app.h>
 #include <rex/cvar.h>
 #include <rex/perf/counter.h>
+#include <rex/ui/window.h>
 
 class Svr2011App : public rex::ReXApp {
  public:
@@ -23,6 +24,14 @@ class Svr2011App : public rex::ReXApp {
     const auto path = rex::cvar::GetFlagByName("perf_log_csv");
     if (!path.empty()) {
       rex::perf::SetCsvLogPath(path);
+    }
+  }
+
+  void OnPreLaunchModule() override {
+    // Hide the cursor over the game once the mouse has been still for a second.
+    if (auto* game_window = window()) {
+      game_window->SetCursorAutoHideDelayMs(1000);
+      game_window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kAutoHidden);
     }
   }
 };
