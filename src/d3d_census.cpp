@@ -26,6 +26,8 @@
 
 REXCVAR_DEFINE_BOOL(svr_d3d_census, false, "SVR2011",
                     "Log cumulative D3D draw-function call counts every 60 presents");
+REXCVAR_DEFINE_BOOL(svr_d3d_probe, false, "SVR2011",
+                    "Log the arguments of the first calls to key D3D functions");
 REXCVAR_DEFINE_STRING(svr_shader_dump_dir, "", "SVR2011",
                       "Save each unique shader container passed to CreateVertexShader or "
                       "CreatePixelShader to this directory, for offline conversion");
@@ -109,7 +111,53 @@ void DumpShaderContainer(const uint8_t* base, uint32_t guest_address, const char
   }
 }
 
+// --svr_d3d_probe: log the arguments of the first calls to a D3D function, and
+// of a few more once the game is past its menus, with the first 64 bytes of
+// any argument that points into guest heap memory.
+std::string DumpGuest(const uint8_t* base, uint32_t address) {
+  std::string out;
+  for (uint32_t i = 0; i < 64; i += 4) {
+    out += fmt::format(" {:08X}", LoadBE32(base + address + i));
+  }
+  return out;
+}
+
+void Probe(const char* name, const PPCContext& ctx, const uint8_t* base, uint32_t& calls) {
+  const uint64_t presents = g_presents.load(std::memory_order_relaxed);
+  const bool early = calls < 4;
+  const bool late = presents >= 1500 && calls < 12;
+  if (!REXCVAR_GET(svr_d3d_probe) || !(early || late)) {
+    return;
+  }
+  ++calls;
+  const uint32_t args[] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
+                           ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
+  REXLOG_INFO("probe {} frame={} r3..r10={:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} "
+              "f1={} f2={}",
+              name, presents, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+              args[7], ctx.f1.f64, ctx.f2.f64);
+  for (int i = 1; i < 8; ++i) {
+    if (args[i] >= 0x40000000 && args[i] < 0xC0000000) {
+      REXLOG_INFO("probe {}   r{} ->{}", name, i + 3, DumpGuest(base, args[i]));
+    }
+  }
+}
+
 }  // namespace
+
+#define SVR_PROBE_HOOK(address, name) \
+  DECLARE_REX_FUNC(sub_##address);    \
+  REX_HOOK_RAW(sub_##address) {       \
+    static uint32_t calls = 0;        \
+    Probe(name, ctx, base, calls);    \
+    __imp__sub_##address(ctx, base);  \
+  }
+
+SVR_PROBE_HOOK(8291F168, "Clear")
+SVR_PROBE_HOOK(8291DD70, "SetStreamSource")
+SVR_PROBE_HOOK(8291DE90, "SetIndices")
+SVR_PROBE_HOOK(82920F78, "SetVertexDeclaration")
+SVR_PROBE_HOOK(82917EC8, "SetTexture")
 
 #define SVR_COUNTING_HOOK(address, counter) \
   DECLARE_REX_FUNC(sub_##address);          \
@@ -123,6 +171,8 @@ void DumpShaderContainer(const uint8_t* base, uint32_t guest_address, const char
 DECLARE_REX_FUNC(sub_82921B58);
 REX_HOOK_RAW(sub_82921B58) {
   Count(kDrawIndexedVertices);
+  static uint32_t probe_calls = 0;
+  Probe("DrawIndexedVertices", ctx, base, probe_calls);
   svr::native::OnDraw(base, ctx.r3.u32);
   __imp__sub_82921B58(ctx, base);
 }
@@ -130,8 +180,28 @@ REX_HOOK_RAW(sub_82921B58) {
 DECLARE_REX_FUNC(sub_82921698);
 REX_HOOK_RAW(sub_82921698) {
   Count(kDrawVerticesUP);
+  static uint32_t probe_calls = 0;
+  Probe("DrawVerticesUP", ctx, base, probe_calls);
   svr::native::OnDraw(base, ctx.r3.u32);
   __imp__sub_82921698(ctx, base);
+}
+
+// D3D internal: copies one register group from the device's register mirror
+// into the command buffer (r3 = device, r5 = first register, r6 = mirror).
+// Logging each distinct pair once gives the mirror layout.
+DECLARE_REX_FUNC(sub_82924E40);
+REX_HOOK_RAW(sub_82924E40) {
+  if (REXCVAR_GET(svr_d3d_census)) {
+    static std::mutex mutex;
+    static std::unordered_set<uint64_t> seen;
+    const uint64_t key = uint64_t(ctx.r5.u32) << 32 | (ctx.r6.u32 - ctx.r3.u32);
+    std::lock_guard lock(mutex);
+    if (seen.insert(key).second) {
+      REXLOG_INFO("register-mirror first_reg={:04X} device_offset={:04X} r4={:08X}", ctx.r5.u32,
+                  ctx.r6.u32 - ctx.r3.u32, ctx.r4.u32);
+    }
+  }
+  __imp__sub_82924E40(ctx, base);
 }
 
 SVR_COUNTING_HOOK(8291EC48, kClearRect)
@@ -142,8 +212,21 @@ SVR_COUNTING_HOOK(82921230, kDraw21230)
 SVR_COUNTING_HOOK(82929158, kDraw29158)
 SVR_COUNTING_HOOK(8292F338, kDraw2F338)
 SVR_COUNTING_HOOK(82922C58, kIndirectBuffer)
-SVR_COUNTING_HOOK(82918A88, kResolve)
-SVR_COUNTING_HOOK(8291E618, kSetRenderTarget)
+DECLARE_REX_FUNC(sub_82918A88);
+REX_HOOK_RAW(sub_82918A88) {
+  Count(kResolve);
+  static uint32_t probe_calls = 0;
+  Probe("Resolve", ctx, base, probe_calls);
+  __imp__sub_82918A88(ctx, base);
+}
+
+DECLARE_REX_FUNC(sub_8291E618);
+REX_HOOK_RAW(sub_8291E618) {
+  Count(kSetRenderTarget);
+  static uint32_t probe_calls = 0;
+  Probe("SetRenderTarget", ctx, base, probe_calls);
+  __imp__sub_8291E618(ctx, base);
+}
 
 // D3DDevice_CreateVertexShader / CreatePixelShader: r3 = shader container.
 DECLARE_REX_FUNC(sub_82921548);
@@ -168,6 +251,8 @@ REX_HOOK_RAW(sub_82921360) {
 // D3DDevice_Present: the only caller of VdSwap, once per frame.
 DECLARE_REX_FUNC(sub_8291AED0);
 REX_HOOK_RAW(sub_8291AED0) {
+  static uint32_t probe_calls = 0;
+  Probe("Present", ctx, base, probe_calls);
   svr::native::OnPresent();
   __imp__sub_8291AED0(ctx, base);
   const uint64_t presents = g_presents.fetch_add(1, std::memory_order_relaxed) + 1;
