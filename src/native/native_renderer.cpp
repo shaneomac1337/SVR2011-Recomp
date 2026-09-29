@@ -24,6 +24,9 @@
 REXCVAR_DEFINE_BOOL(svr_native_renderer, false, "SVR2011",
                     "Draw with the native Vulkan renderer instead of Xenos emulation "
                     "(experimental)");
+REXCVAR_DEFINE_INT32(svr_native_debug_target, 0, "SVR2011",
+                     "Native renderer debugging: present the Nth render target created (1-based) "
+                     "instead of the front buffer");
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -46,6 +49,8 @@ constexpr uint32_t kDeviceVertexConstants = 0x780;  // 256 float4
 constexpr uint32_t kDevicePixelConstants = 0x1780;  // 256 float4
 constexpr uint32_t kDeviceBooleans = 0x2780;        // VS 4 dwords, PS 4 dwords
 constexpr uint32_t kDeviceVertexDeclaration = 0x2ED8;
+constexpr uint32_t kDeviceStreamFetch = 0x778;  // stream 0; stream s at -8 s
+constexpr uint32_t kDeviceIndexBuffer = 0x3144;
 constexpr uint32_t kDevicePixelShader = 0x3244;
 constexpr uint32_t kDeviceVertexShader = 0x3248;
 // Texture objects keep their fetch constant here.
@@ -211,15 +216,19 @@ constexpr uint32_t kDummyBinding = 15;
 
 struct VertexAttribute {
   uint32_t location;
+  uint32_t stream;
   VkFormat format;
   uint32_t offset;
 };
+
+constexpr uint32_t kMaxStreams = 8;
 
 struct VertexLayout {
   uint32_t attribute_count = 0;
   VertexAttribute attributes[kMaxAttributes] = {};
   uint32_t dummy_locations = 0;  // bitmask of shader locations fed zeros
   uint32_t swapped_texcoords = 0;
+  uint32_t stream_mask = 0;
   bool packed_normal = false;
 };
 
@@ -242,7 +251,8 @@ uint32_t ParseElements(const uint8_t* p, uint32_t max_bytes, VertexLayout& layou
     const uint8_t usage = p[off + 9];
     const uint8_t usage_index = p[off + 10];
     const DeclType* decl_type = FindDeclType(type);
-    if (stream != 0 || offset >= 256 || usage > 13 || usage_index > 15 || !decl_type) {
+    if (stream >= kMaxStreams || offset >= 256 || usage > 13 || usage_index > 15 ||
+        !decl_type) {
       break;
     }
     ++count;
@@ -254,6 +264,8 @@ uint32_t ParseElements(const uint8_t* p, uint32_t max_bytes, VertexLayout& layou
     attribute.location = location->location;
     attribute.format = location->is_uint ? decl_type->uint_format : decl_type->float_format;
     attribute.offset = offset;
+    attribute.stream = stream;
+    layout.stream_mask |= 1u << stream;
     if (decl_type->packed_normal && location->is_uint) {
       layout.packed_normal = true;
     }
@@ -298,7 +310,7 @@ const DeclEntry* GetDeclaration(const uint8_t* base, uint32_t object) {
       entry.layout.dummy_locations |= 1u << l.location;
     }
   }
-  if (logged++ < 12) {
+  if (logged++ < 40) {
     std::string dump;
     for (uint32_t i = 0; i < 0x80; i += 4) {
       dump += fmt::format(" {:08X}", LoadBE32(p + i));
@@ -361,7 +373,7 @@ struct PipelineKey {
   uint32_t color_mask;
   uint32_t depth_control;
   uint32_t cull;
-  uint32_t stride;
+  uint32_t strides[kMaxStreams];
   uint32_t dummy_locations;
   uint32_t attribute_count;
   VertexAttribute attributes[kMaxAttributes];
@@ -436,7 +448,8 @@ struct Stats {
   uint64_t no_shader = 0;
   uint64_t no_declaration = 0;
   uint64_t unsupported_primitive = 0;
-  uint64_t indexed = 0;
+  uint64_t drawn_indexed = 0;
+  uint64_t bad_stream = 0;
   uint64_t other = 0;
   uint64_t clears = 0;
   uint64_t resolves = 0;
@@ -461,6 +474,9 @@ struct State {
   uint32_t surface_height[4] = {720, 720, 720, 720};
 
   std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash, PipelineKeyEqual> pipelines;
+  uint32_t stream_strides[kMaxStreams] = {};
+  std::vector<RenderTarget*> render_target_order;
+  std::vector<uint32_t> index_scratch;
   Stats stats;
   uint32_t errors_logged = 0;
 } g;
@@ -620,6 +636,7 @@ RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t width, uin
   target->height = height;
   target->is_depth = is_depth;
   slot = std::move(target);
+  g.render_target_order.push_back(slot.get());
   REXLOG_INFO("native renderer: {} render target {}x{} format {} (key {:X})",
               is_depth ? "depth" : "colour", width, height, uint32_t(format), key);
   return slot.get();
@@ -708,14 +725,21 @@ VkPipeline GetPipeline(const PipelineKey& key) {
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   stages[1].module = key.pixel_shader;
 
-  VkVertexInputBindingDescription bindings[2] = {};
-  bindings[0] = {0, key.stride, VK_VERTEX_INPUT_RATE_VERTEX};
-  bindings[1] = {kDummyBinding, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+  VkVertexInputBindingDescription bindings[kMaxStreams + 1] = {};
+  uint32_t binding_count = 0;
+  for (uint32_t stream = 0; stream < kMaxStreams; ++stream) {
+    if (key.strides[stream]) {
+      bindings[binding_count++] = {stream, key.strides[stream], VK_VERTEX_INPUT_RATE_VERTEX};
+    }
+  }
+  if (key.dummy_locations) {
+    bindings[binding_count++] = {kDummyBinding, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+  }
   VkVertexInputAttributeDescription attributes[kMaxAttributes * 2] = {};
   uint32_t attribute_count = 0;
   for (uint32_t i = 0; i < key.attribute_count; ++i) {
-    attributes[attribute_count++] = {key.attributes[i].location, 0, key.attributes[i].format,
-                                     key.attributes[i].offset};
+    attributes[attribute_count++] = {key.attributes[i].location, key.attributes[i].stream,
+                                     key.attributes[i].format, key.attributes[i].offset};
   }
   for (const InputLocation& l : kInputLocations) {
     if (key.dummy_locations & (1u << l.location)) {
@@ -726,7 +750,7 @@ VkPipeline GetPipeline(const PipelineKey& key) {
   }
   VkPipelineVertexInputStateCreateInfo vertex_input = {
       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-  vertex_input.vertexBindingDescriptionCount = key.dummy_locations ? 2 : 1;
+  vertex_input.vertexBindingDescriptionCount = binding_count;
   vertex_input.pVertexBindingDescriptions = bindings;
   vertex_input.vertexAttributeDescriptionCount = attribute_count;
   vertex_input.pVertexAttributeDescriptions = attributes;
@@ -734,6 +758,11 @@ VkPipeline GetPipeline(const PipelineKey& key) {
   VkPipelineInputAssemblyStateCreateInfo input_assembly = {
       VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   input_assembly.topology = VkPrimitiveTopology(key.topology);
+  // Strips from index buffers use the all-ones index as a restart marker.
+  input_assembly.primitiveRestartEnable =
+      key.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ||
+      key.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP ||
+      key.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
 
   VkPipelineViewportStateCreateInfo viewport = {
       VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1072,54 +1101,52 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination) {
   }
 }
 
-void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
-                    uint32_t vertex_count, uint32_t stride, uint32_t vertices) {
-  if (!g.device || !vertex_count || !vertices || !stride || stride > 256 || (stride & 3)) {
-    return;
+namespace {
+
+bool Topology(uint32_t primitive, VkPrimitiveTopology& topology, bool& quads) {
+  quads = false;
+  switch (primitive) {
+    case 1: topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; return true;
+    case 2: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; return true;
+    case 3: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; return true;
+    case 4: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; return true;
+    case 5: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN; return true;
+    case 6: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; return true;
+    case 13:
+      topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      quads = true;
+      return true;
+    default:
+      return false;
   }
-  BeginFrameIfNeeded();
-  const uint8_t* d3d = base + device;
+}
+
+// Shaders, declaration, render targets, pipeline, constants and dynamic
+// state shared by both draw kinds. Leaves the pipeline bound; returns the
+// declaration's layout, or nullptr when the draw is skipped.
+const VertexLayout* PrepareDraw(const uint8_t* base, const uint8_t* d3d,
+                                VkPrimitiveTopology topology,
+                                const uint32_t strides[kMaxStreams]) {
   const NativeShader* vertex_shader =
       shader_library::Find(LoadBE32(d3d + kDeviceVertexShader));
   const NativeShader* pixel_shader = shader_library::Find(LoadBE32(d3d + kDevicePixelShader));
   if (!vertex_shader || !pixel_shader || vertex_shader->is_pixel_shader ||
       !pixel_shader->is_pixel_shader) {
     ++g.stats.no_shader;
-    return;
+    return nullptr;
   }
   const DeclEntry* declaration =
       GetDeclaration(base, LoadBE32(d3d + kDeviceVertexDeclaration));
   if (!declaration) {
     ++g.stats.no_declaration;
-    return;
-  }
-
-  // Xenos primitive types; quads become indexed triangle lists.
-  VkPrimitiveTopology topology;
-  bool quads = false;
-  switch (primitive) {
-    case 1: topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
-    case 2: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
-    case 3: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
-    case 4: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
-    case 5: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN; break;
-    case 6: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
-    case 13:
-      topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-      quads = true;
-      break;
-    default:
-      ++g.stats.unsupported_primitive;
-      return;
-  }
-
-  const uint32_t depth_control = ReadReg(d3d, RB_DEPTHCONTROL);
-  const bool need_depth = (depth_control & 7) != 0;
-  if (!EnsureRendering(d3d, need_depth)) {
-    ++g.stats.other;
-    return;
+    return nullptr;
   }
   const VertexLayout& layout = declaration->layout;
+  const uint32_t depth_control = ReadReg(d3d, RB_DEPTHCONTROL);
+  if (!EnsureRendering(d3d, (depth_control & 7) != 0)) {
+    ++g.stats.other;
+    return nullptr;
+  }
 
   PipelineKey key;
   std::memset(&key, 0, sizeof(key));
@@ -1142,33 +1169,23 @@ void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
   key.color_mask = ReadReg(d3d, RB_COLOR_MASK);
   key.depth_control = g.active_depth ? depth_control : 0;
   key.cull = ReadReg(d3d, PA_SU_SC_MODE_CNTL) & 7;
-  key.stride = stride;
+  for (uint32_t stream = 0; stream < kMaxStreams; ++stream) {
+    key.strides[stream] = (layout.stream_mask & (1u << stream)) ? strides[stream] : 0;
+  }
   key.dummy_locations = layout.dummy_locations;
   key.attribute_count = layout.attribute_count;
   std::memcpy(key.attributes, layout.attributes, sizeof(key.attributes));
   const VkPipeline pipeline = GetPipeline(key);
   if (!pipeline) {
     ++g.stats.other;
-    return;
+    return nullptr;
   }
 
   PushConstants push;
   if (!UploadConstants(d3d, layout.swapped_texcoords, push)) {
     ++g.stats.other;
-    return;
+    return nullptr;
   }
-  const uint32_t vertex_bytes = vertex_count * stride;
-  const Upload vertex_upload = AllocateUpload(vertex_bytes + 64, 16);
-  if (!vertex_upload.data) {
-    ++g.stats.other;
-    return;
-  }
-  // All vertex data is fetched as 32-bit big-endian words.
-  SwapCopy32(reinterpret_cast<uint32_t*>(vertex_upload.data), base + vertices,
-             vertex_bytes / 4);
-  // Zeros for shader inputs the declaration does not feed.
-  std::memset(vertex_upload.data + vertex_bytes, 0, 64);
-
   const VkCommandBuffer cb = g.slot->main_cb;
   const auto& dfn = *g_vk.dfn;
   if (g.bound_pipeline != pipeline) {
@@ -1179,12 +1196,60 @@ void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
   dfn.vkCmdPushConstants(cb, g_vk.pipeline_layout,
                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(push), &push);
-  const VkBuffer buffers[2] = {vertex_upload.buffer, vertex_upload.buffer};
-  const VkDeviceSize offsets[2] = {vertex_upload.offset, vertex_upload.offset + vertex_bytes};
-  dfn.vkCmdBindVertexBuffers(cb, 0, 1, &buffers[0], &offsets[0]);
   if (layout.dummy_locations) {
-    dfn.vkCmdBindVertexBuffers(cb, kDummyBinding, 1, &buffers[1], &offsets[1]);
+    // Zeros for shader inputs the declaration does not feed.
+    const Upload zeros = AllocateUpload(64, 16);
+    if (!zeros.data) {
+      return nullptr;
+    }
+    std::memset(zeros.data, 0, 64);
+    dfn.vkCmdBindVertexBuffers(cb, kDummyBinding, 1, &zeros.buffer, &zeros.offset);
   }
+  return &layout;
+}
+
+// Copies guest vertex data, which is fetched as 32-bit big-endian words.
+bool UploadVertices(const uint8_t* source, uint32_t bytes, uint32_t binding) {
+  const Upload upload = AllocateUpload((bytes + 3) & ~3u, 16);
+  if (!upload.data) {
+    return false;
+  }
+  SwapCopy32(reinterpret_cast<uint32_t*>(upload.data), source, (bytes + 3) / 4);
+  g_vk.dfn->vkCmdBindVertexBuffers(g.slot->main_cb, binding, 1, &upload.buffer, &upload.offset);
+  return true;
+}
+
+}  // namespace
+
+void OnSetStreamSource(uint32_t stream, uint32_t stride) {
+  if (stream < kMaxStreams) {
+    g.stream_strides[stream] = stride;
+  }
+}
+
+void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
+                    uint32_t vertex_count, uint32_t stride, uint32_t vertices) {
+  if (!g.device || !vertex_count || !vertices || !stride || stride > 256 || (stride & 3)) {
+    return;
+  }
+  BeginFrameIfNeeded();
+  VkPrimitiveTopology topology;
+  bool quads;
+  if (!Topology(primitive, topology, quads)) {
+    ++g.stats.unsupported_primitive;
+    return;
+  }
+  const uint32_t strides[kMaxStreams] = {stride};
+  const uint8_t* d3d = base + device;
+  if (!PrepareDraw(base, d3d, topology, strides)) {
+    return;
+  }
+  if (!UploadVertices(base + vertices, vertex_count * stride, 0)) {
+    ++g.stats.other;
+    return;
+  }
+  const VkCommandBuffer cb = g.slot->main_cb;
+  const auto& dfn = *g_vk.dfn;
   if (quads) {
     const uint32_t quad_count = vertex_count / 4;
     const Upload index_upload = AllocateUpload(quad_count * 6 * sizeof(uint32_t), 16);
@@ -1206,11 +1271,115 @@ void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
   ++g.stats.drawn;
 }
 
-void OnDrawIndexed(const uint8_t* base, uint32_t device) {
-  if (!g.device) {
+void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
+                   int32_t base_vertex, uint32_t start_index, uint32_t index_count) {
+  if (!g.device || !index_count) {
     return;
   }
-  ++g.stats.indexed;
+  BeginFrameIfNeeded();
+  VkPrimitiveTopology topology;
+  bool quads;
+  if (!Topology(primitive, topology, quads)) {
+    ++g.stats.unsupported_primitive;
+    return;
+  }
+  const uint8_t* d3d = base + device;
+  const uint32_t index_buffer = LoadBE32(d3d + kDeviceIndexBuffer);
+  if (!index_buffer) {
+    ++g.stats.other;
+    return;
+  }
+  // Index buffer object: Common bit 31 = 32-bit indices, +0x18 = address.
+  const bool index32 = (LoadBE32(base + index_buffer) & 0x80000000) != 0;
+  const uint32_t reset = index32 ? 0xFFFFFFFFu : 0xFFFFu;
+  // The GPU sees the physical address; the 0xE0000000 range is offset by
+  // 0x1000, as D3D computes it for the draw packet.
+  const uint32_t index_address = (LoadBE32(base + index_buffer + 0x18) & ~3u) +
+                                 start_index * (index32 ? 4 : 2);
+  const uint8_t* index_data = TranslatePhysical(
+      (index_address & 0x1FFFFFFF) + (index_address >= 0xE0000000 ? 0x1000 : 0));
+
+  std::vector<uint32_t>& indices = g.index_scratch;
+  indices.resize(index_count);
+  uint32_t min_index = UINT32_MAX, max_index = 0;
+  for (uint32_t i = 0; i < index_count; ++i) {
+    const uint32_t index =
+        index32 ? LoadBE32(index_data + i * 4) : LoadBE16(index_data + i * 2);
+    indices[i] = index;
+    if (index != reset) {
+      min_index = std::min(min_index, index);
+      max_index = std::max(max_index, index);
+    }
+  }
+  if (min_index > max_index) {
+    return;
+  }
+
+  uint32_t strides[kMaxStreams];
+  std::memcpy(strides, g.stream_strides, sizeof(strides));
+  const VertexLayout* layout = PrepareDraw(base, d3d, topology, strides);
+  if (!layout) {
+    return;
+  }
+  // Vertex fetch constants written by SetStreamSource: stream s at device
+  // +0x778 - 8 s (slot 95 - s), dword 0 = physical address | type 3.
+  const uint32_t first_vertex = uint32_t(int32_t(min_index) + base_vertex);
+  const uint32_t vertex_count = max_index - min_index + 1;
+  for (uint32_t stream = 0; stream < kMaxStreams; ++stream) {
+    if (!(layout->stream_mask & (1u << stream))) {
+      continue;
+    }
+    const uint32_t fetch = LoadBE32(d3d + kDeviceStreamFetch - 8 * stream);
+    const uint32_t stride = strides[stream];
+    const bool ok = (fetch & 3) == 3 && stride &&
+                    UploadVertices(TranslatePhysical(fetch & ~3u) + size_t(first_vertex) * stride,
+                                   vertex_count * stride, stream);
+    if (!ok) {
+      ++g.stats.bad_stream;
+      static uint32_t logged = 0;
+      if (logged++ < 16) {
+        REXLOG_WARN("native renderer: indexed draw stream {} fetch={:08X} {:08X} stride={} "
+                    "indices {}..{} base_vertex={} count={} index32={}",
+                    stream, fetch, LoadBE32(d3d + kDeviceStreamFetch - 8 * stream + 4), stride,
+                    min_index, max_index, base_vertex, index_count, index32);
+        std::string ib, data;
+        for (uint32_t i = 0; i < 32; i += 4) {
+          ib += fmt::format(" {:08X}", LoadBE32(base + index_buffer + i));
+          data += fmt::format(" {:08X}", LoadBE32(index_data + i));
+        }
+        REXLOG_WARN("native renderer:   index buffer {:08X}:{} start={} data:{}", index_buffer,
+                    ib, start_index, data);
+      }
+      return;
+    }
+  }
+
+  // Indices rebased to the first uploaded vertex; quads become triangles.
+  uint32_t draw_count = quads ? index_count / 4 * 6 : index_count;
+  const Upload index_upload = AllocateUpload(size_t(draw_count) * sizeof(uint32_t), 16);
+  if (!index_upload.data) {
+    ++g.stats.other;
+    return;
+  }
+  auto* out = reinterpret_cast<uint32_t*>(index_upload.data);
+  auto rebase = [&](uint32_t index) { return index == reset ? 0xFFFFFFFFu : index - min_index; };
+  if (quads) {
+    for (uint32_t i = 0, o = 0; i + 3 < index_count; i += 4, o += 6) {
+      const uint32_t* q = &indices[i];
+      const uint32_t tri[6] = {rebase(q[0]), rebase(q[1]), rebase(q[2]),
+                               rebase(q[0]), rebase(q[2]), rebase(q[3])};
+      std::memcpy(out + o, tri, sizeof(tri));
+    }
+  } else {
+    for (uint32_t i = 0; i < index_count; ++i) {
+      out[i] = rebase(indices[i]);
+    }
+  }
+  const VkCommandBuffer cb = g.slot->main_cb;
+  const auto& dfn = *g_vk.dfn;
+  dfn.vkCmdBindIndexBuffer(cb, index_upload.buffer, index_upload.offset, VK_INDEX_TYPE_UINT32);
+  dfn.vkCmdDrawIndexed(cb, draw_count, 1, 0, 0, 0);
+  ++g.stats.drawn_indexed;
 }
 
 void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
@@ -1226,10 +1395,10 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   if (g.frame % 300 == 0) {
     const Stats& s = g.stats;
     REXLOG_INFO("native renderer: frame {}: drawn={} no_shader={} no_declaration={} "
-                "unsupported_primitive={} indexed(skipped)={} other={} clears={} resolves={} "
+                "unsupported_primitive={} drawn_indexed={} bad_stream={} other={} clears={} resolves={} "
                 "pipelines={} render_targets={}",
                 g.frame, s.drawn, s.no_shader, s.no_declaration, s.unsupported_primitive,
-                s.indexed, s.other, s.clears, s.resolves, g.pipelines.size(),
+                s.drawn_indexed, s.bad_stream, s.other, s.clears, s.resolves, g.pipelines.size(),
                 g.render_targets.size());
     g.stats = {};
   }
@@ -1241,6 +1410,14 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
     const textures::FetchConstant fetch =
         textures::LoadFetchConstant(base + front_buffer + kTextureFetchConstant);
     source = textures::FindResolveTarget(fetch.dwords[1] & 0xFFFFF000);
+  }
+  const int32_t debug_target = REXCVAR_GET(svr_native_debug_target);
+  if (debug_target > 0 && size_t(debug_target) <= g.render_target_order.size()) {
+    RenderTarget& target = *g.render_target_order[debug_target - 1];
+    if (!target.is_depth) {
+      TransitionTarget(target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      source = {target.image, target.format, target.width, target.height, &target.layout};
+    }
   }
   if (source.image) {
     ImageBarrier(cb, source.image, VK_IMAGE_ASPECT_COLOR_BIT, *source.layout,

@@ -43,7 +43,11 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination);
 void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
                     uint32_t vertex_count, uint32_t stride, uint32_t vertices);
 
-// D3DDevice_DrawIndexedVertices (not drawn yet; counted).
-void OnDrawIndexed(const uint8_t* base, uint32_t device);
+// D3DDevice_SetStreamSource: the stride, which the device does not keep.
+void OnSetStreamSource(uint32_t stream, uint32_t stride);
+
+// D3DDevice_DrawIndexedVertices: indices from the device's index buffer.
+void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
+                   int32_t base_vertex, uint32_t start_index, uint32_t index_count);
 
 }  // namespace svr::native

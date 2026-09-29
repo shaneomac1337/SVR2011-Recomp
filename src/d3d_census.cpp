@@ -153,7 +153,6 @@ void Probe(const char* name, const PPCContext& ctx, const uint8_t* base, uint32_
     __imp__sub_##address(ctx, base);  \
   }
 
-SVR_PROBE_HOOK(8291DD70, "SetStreamSource")
 SVR_PROBE_HOOK(8291DE90, "SetIndices")
 SVR_PROBE_HOOK(82920F78, "SetVertexDeclaration")
 SVR_PROBE_HOOK(82917EC8, "SetTexture")
@@ -165,16 +164,33 @@ SVR_PROBE_HOOK(82917EC8, "SetTexture")
     __imp__sub_##address(ctx, base);        \
   }
 
-// D3DDevice_DrawIndexedVertices: r3 = device, whose register mirror holds the
-// draw's complete state once the original has committed it.
+// D3DDevice_SetStreamSource: r4 = stream, r5 = vertex buffer, r6 = offset,
+// r7 = stride. It writes the stream's vertex fetch constant into the device.
+DECLARE_REX_FUNC(sub_8291DD70);
+REX_HOOK_RAW(sub_8291DD70) {
+  static uint32_t probe_calls = 0;
+  Probe("SetStreamSource", ctx, base, probe_calls);
+  const uint32_t stream = ctx.r4.u32;
+  const uint32_t stride = ctx.r7.u32;
+  __imp__sub_8291DD70(ctx, base);
+  svr::native::OnSetStreamSource(stream, stride);
+}
+
+// D3DDevice_DrawIndexedVertices: r3 = device, r4 = primitive, r5 = base
+// vertex, r6 = start index, r7 = index count. The device's register mirror
+// holds the draw's complete state once the original has committed it.
 DECLARE_REX_FUNC(sub_82921B58);
 REX_HOOK_RAW(sub_82921B58) {
   Count(kDrawIndexedVertices);
   static uint32_t probe_calls = 0;
   Probe("DrawIndexedVertices", ctx, base, probe_calls);
   const uint32_t device = ctx.r3.u32;
+  const uint32_t primitive = ctx.r4.u32;
+  const int32_t base_vertex = ctx.r5.s32;
+  const uint32_t start_index = ctx.r6.u32;
+  const uint32_t index_count = ctx.r7.u32;
   __imp__sub_82921B58(ctx, base);
-  svr::native::OnDrawIndexed(base, device);
+  svr::native::OnDrawIndexed(base, device, primitive, base_vertex, start_index, index_count);
 }
 
 // D3DDevice_BeginVertices: r4 = primitive, r5 = vertex count, r6 = stride;
