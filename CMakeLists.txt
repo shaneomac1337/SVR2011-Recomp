@@ -10,6 +10,7 @@ include(generated/rexglue.cmake)
 
 set(SVR2011_SOURCES
     src/main.cpp
+    src/d3d_census.cpp
 )
 
 if(WIN32)

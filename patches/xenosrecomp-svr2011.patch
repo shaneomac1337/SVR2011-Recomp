@@ -1,0 +1,297 @@
+diff --git a/XenosRecomp/dxc_compiler.cpp b/XenosRecomp/dxc_compiler.cpp
+index 4a851c2..2932ea0 100644
+--- a/XenosRecomp/dxc_compiler.cpp
++++ b/XenosRecomp/dxc_compiler.cpp
+@@ -56,7 +56,9 @@ IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixe
+ 
+     // Keep the HLSL preprocessor in step with how this tool was built so
+     // shader_common.h selects the matching constant layout.
+-#ifdef REBLUE_RECOMP
++#ifdef SVR2011_RECOMP
++    args[argCount++] = L"-DSVR2011_RECOMP";
++#elif defined(REBLUE_RECOMP)
+     args[argCount++] = L"-DREBLUE_RECOMP";
+ #elif defined(UNLEASHED_RECOMP)
+     args[argCount++] = L"-DUNLEASHED_RECOMP";
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 63c37c9..60d4c9f 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -42,7 +42,14 @@ struct PushConstants
+ 
+ [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
+ 
+-#ifdef REBLUE_RECOMP
++#if defined(SVR2011_RECOMP)
++// 32 sampler slots: texture indices 0..383 (2D, 3D, cube), sampler indices 384..511,
++// then the 256-bit boolean file (VS 0..127, PS 128..255).
++#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 512 + (i)*4)
++#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 544)
++#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 548)
++#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 556)
++#elif defined(REBLUE_RECOMP)
+ // 256-bit boolean register file (BD bool addresses reach ~158), then per-usage 16-bit-pair swap masks.
+ #define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256 + (i)*4)
+ #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 288)
+@@ -68,7 +75,15 @@ struct PushConstants
+ 
+ #else
+ 
+-#ifdef REBLUE_RECOMP
++#if defined(SVR2011_RECOMP)
++#define DEFINE_SHARED_CONSTANTS() \
++    uint4 g_BooleansArr[2] : packoffset(c32); \
++    uint g_SwappedTexcoords : packoffset(c34.x); \
++    float2 g_HalfPixelOffset : packoffset(c34.y); \
++    float g_AlphaThreshold : packoffset(c34.w);
++
++#define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
++#elif defined(REBLUE_RECOMP)
+ #define DEFINE_SHARED_CONSTANTS() \
+     uint4 g_BooleansArr[2] : packoffset(c16); \
+     uint g_SwappedTexcoords : packoffset(c18.x); \
+@@ -95,7 +110,7 @@ uint g_SpecConstants();
+ 
+ #endif
+ 
+-#ifdef REBLUE_RECOMP
++#if defined(REBLUE_RECOMP) || defined(SVR2011_RECOMP)
+ // Test Xenos boolean register N in the unified VS(0..127)/PS(128..255) file.
+ #define BOOL_BIT(n) ((g_Booleans((n) / 32u) & (1u << ((n) & 31u))) != 0)
+ #endif
+@@ -112,10 +127,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+     return dimensions;
+ }
+ 
++// Xenos vertex fetches read mip 0; Sample() needs derivatives that vertex shaders lack.
++#ifdef XR_VERTEX_SHADER
++#define XR_SAMPLE(texture, samplerState, coord) (texture).SampleLevel(samplerState, coord, 0)
++#else
++#define XR_SAMPLE(texture, samplerState, coord) (texture).Sample(samplerState, coord)
++#endif
++
+ float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+-    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
++    return XR_SAMPLE(texture, g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
+ }
+ 
+ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+@@ -218,12 +240,12 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+ 
+ float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
+ {
+-    return g_Texture3DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
++    return XR_SAMPLE(g_Texture3DDescriptorHeap[resourceDescriptorIndex], g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
+ }
+ 
+ struct CubeMapData
+ {
+-	#ifdef REBLUE_RECOMP
++	#if defined(REBLUE_RECOMP) || defined(SVR2011_RECOMP)
+     // BD's cube-shadow PCF issues up to 9 cube ops per shader (bd_mirror_cs_ps /
+     // bd_glass_cs_ps); overflowing this array drops the stored directions and
+     // every tfetchCube reads OOB -> point-light shadows vanish.
+@@ -236,7 +258,7 @@ struct CubeMapData
+ 
+ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
+ {
+-    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
++    return XR_SAMPLE(g_TextureCubeDescriptorHeap[resourceDescriptorIndex], g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
+ }
+ 
+ #ifdef REBLUE_RECOMP
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index feaa90b..8f51cc8 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -1,4 +1,17 @@
+ #include "shader_recompiler.h"
++
++// SvR 2011 (SVR2011_RECOMP) shares the Xenos-generic parts of the re:Blue mode
++// (full boolean file, PRED_SETINV, aliased constants, unnamed samplers) but not
++// its Blue Dragon vertex and shadow handling, and needs 32 sampler slots and
++// COLOR0-7 interpolators.
++#if defined(REBLUE_RECOMP) || defined(SVR2011_RECOMP)
++#define XR_XENOS_FIXES 1
++#endif
++#ifdef SVR2011_RECOMP
++static constexpr uint32_t SAMPLER_SLOTS = 32;
++#else
++static constexpr uint32_t SAMPLER_SLOTS = 16;
++#endif
+ #include "shader_common.h"
+ 
+ static constexpr char SWIZZLES[] = 
+@@ -130,7 +143,15 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
+     { DeclUsage::TexCoord, 14 },
+     { DeclUsage::TexCoord, 15 },
+     { DeclUsage::Color, 0 },
+-    { DeclUsage::Color, 1 }
++    { DeclUsage::Color, 1 },
++#ifdef SVR2011_RECOMP
++    { DeclUsage::Color, 2 },
++    { DeclUsage::Color, 3 },
++    { DeclUsage::Color, 4 },
++    { DeclUsage::Color, 5 },
++    { DeclUsage::Color, 6 },
++    { DeclUsage::Color, 7 },
++#endif
+ };
+ 
+ static constexpr std::string_view TEXTURE_DIMENSIONS[] = 
+@@ -1108,7 +1129,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluScalarOpcode::SetpInv:
+-#ifdef REBLUE_RECOMP
++#ifdef XR_XENOS_FIXES
+             // PRED_SETINV: src==1 -> 0, src==0 -> 1, else passthrough.
+             print("{0} == 1.0 ? 0.0 : ({0} == 0.0 ? 1.0 : {0})", op(SCALAR_0));
+ #else
+@@ -1280,11 +1301,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
+     assert(shaderContainer->constantTableOffset != NULL);
+ 
++    isPixelShader = (shaderContainer->flags & 0x1) == 0;
++
++    // Vertex shaders have no derivatives, so shader_common.h samples mip 0 there.
++    if (!isPixelShader)
++        out += "#define XR_VERTEX_SHADER\n";
+     out += include;
+     out += '\n';
+ 
+-    isPixelShader = (shaderContainer->flags & 0x1) == 0;
+-
+     const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
+     constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
+ 
+@@ -1346,7 +1370,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     constantName, shaderName, constantInfo->registerIndex * 16);
+             }
+             
+-#ifdef REBLUE_RECOMP
++#ifdef XR_XENOS_FIXES
+             // BD aliases a singleton constant over an array slot; the wider registrant wins so body and cbuffer agree.
+             for (uint16_t j = 0; j < constantInfo->registerCount; j++)
+             {
+@@ -1368,11 +1392,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+             {
+                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                    constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
++                    constantName, TEXTURE_DIMENSIONS[j], j * SAMPLER_SLOTS * 4 + constantInfo->registerIndex * 4);
+             }
+ 
+             println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
++                constantName, std::size(TEXTURE_DIMENSIONS) * SAMPLER_SLOTS * 4 + constantInfo->registerIndex * 4);
+ 
+             samplers.emplace(constantInfo->registerIndex, constantName);
+             break;
+@@ -1381,19 +1405,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         }
+     }
+ 
+-#ifdef REBLUE_RECOMP
+-    // BD bodies reference unnamed sampler slots; emit fallback descriptor-index defines for any slot 0..15 the table didn't name.
+-    for (uint32_t r = 0; r < 16; r++)
++#ifdef XR_XENOS_FIXES
++    // Bodies can reference unnamed sampler slots; emit fallback descriptor-index defines for any slot the table didn't name.
++    for (uint32_t r = 0; r < SAMPLER_SLOTS; r++)
+     {
+         if (samplers.find(r) != samplers.end())
+             continue;
+         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+         {
+             println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
++                r, TEXTURE_DIMENSIONS[j], j * SAMPLER_SLOTS * 4 + r * 4);
+         }
+         println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-            r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
++            r, std::size(TEXTURE_DIMENSIONS) * SAMPLER_SLOTS * 4 + r * 4);
+     }
+ #endif
+ 
+@@ -1409,7 +1433,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+         if (constantInfo->registerSet == RegisterSet::Float4)
+         {
+-#ifdef REBLUE_RECOMP
++#ifdef XR_XENOS_FIXES
+             // Only the alias winner gets a packoffset slot; a loser would overlap it in the cbuffer and fail DXC.
+             auto winner = float4Constants.find(constantInfo->registerIndex);
+             if (winner == float4Constants.end() || winner->second != constantInfo)
+@@ -1450,27 +1474,27 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+             {
+                 println("\tuint {}_Texture{}DescriptorIndex : packoffset(c{}.{});",
+-                    constantName, TEXTURE_DIMENSIONS[j], j * 4 + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
++                    constantName, TEXTURE_DIMENSIONS[j], j * (SAMPLER_SLOTS / 4) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
+             }
+ 
+             println("\tuint {}_SamplerDescriptorIndex : packoffset(c{}.{});",
+-                constantName, 4 * std::size(TEXTURE_DIMENSIONS) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
++                constantName, (SAMPLER_SLOTS / 4) * std::size(TEXTURE_DIMENSIONS) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
+         }
+     }
+ 
+-#ifdef REBLUE_RECOMP
+-    // Mirror the SPIR-V fallback: packoffset slots for any unnamed sampler index 0..15.
+-    for (uint32_t r = 0; r < 16; r++)
++#ifdef XR_XENOS_FIXES
++    // Mirror the SPIR-V fallback: packoffset slots for any unnamed sampler index.
++    for (uint32_t r = 0; r < SAMPLER_SLOTS; r++)
+     {
+         if (samplers.find(r) != samplers.end())
+             continue;
+         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+         {
+             println("\tuint s{}_Texture{}DescriptorIndex : packoffset(c{}.{});",
+-                r, TEXTURE_DIMENSIONS[j], j * 4 + r / 4, SWIZZLES[r % 4]);
++                r, TEXTURE_DIMENSIONS[j], j * (SAMPLER_SLOTS / 4) + r / 4, SWIZZLES[r % 4]);
+         }
+         println("\tuint s{}_SamplerDescriptorIndex : packoffset(c{}.{});",
+-            r, 4 * std::size(TEXTURE_DIMENSIONS) + r / 4, SWIZZLES[r % 4]);
++            r, (SAMPLER_SLOTS / 4) * std::size(TEXTURE_DIMENSIONS) + r / 4, SWIZZLES[r % 4]);
+     }
+ #endif
+ 
+@@ -1487,7 +1511,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         if (constantInfo->registerSet == RegisterSet::Bool)
+         {
+             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
+-#ifdef REBLUE_RECOMP
++#ifdef XR_XENOS_FIXES
+             // Key named bools by the unified VS(0..127)/PS(128..255) bit so CF tests (also unified) resolve them.
+             const uint32_t unifiedBit = uint32_t(constantInfo->registerIndex) + (isPixelShader ? 128u : 0u);
+             println("\t#define {} BOOL_BIT({})", constantName, unifiedBit);
+@@ -1733,7 +1757,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     #if defined(UNLEASHED_RECOMP)
+         if (!hasMtxProjection)
+             out += "\toPos = 0.0;\n";
+-    #elif defined(REBLUE_RECOMP)
++    #elif defined(XR_XENOS_FIXES)
+         // Always define SV_Position so a skipped position-write block doesn't leave it undef.
+         out += "\toPos = 0.0;\n";
+     #endif
+@@ -2088,7 +2112,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                 address = cfInstr.condExec.address;
+                 count = cfInstr.condExec.count;
+                 sequence = cfInstr.condExec.sequence;
+-#ifdef REBLUE_RECOMP
++#ifdef XR_XENOS_FIXES
+                 shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecEnd ||
+                                 cfInstr.opcode == ControlFlowOpcode::CondExecPredCleanEnd);
+                 // Gate the block on its boolean constant (Xenos cexec bN / cexec !bN); baseline ran it unconditionally.
+@@ -2174,7 +2198,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     }
+                     else
+                     {
+-#ifdef REBLUE_RECOMP
++#ifdef XR_XENOS_FIXES
+                         // Bools expand to BOOL_BIT(N) expressions; negate when the jump fires on a clear bit.
+                         const bool jumpIfSet = cfInstr.condJmp.condition ^ simpleControlFlow;
+                         auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
