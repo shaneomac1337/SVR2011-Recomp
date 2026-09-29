@@ -208,11 +208,9 @@ constexpr DeclType kDeclTypes[] = {
     {0x2C82A1, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, false},
     {0x2A2287, VK_FORMAT_A2B10G10R10_USCALED_PACK32, VK_FORMAT_R32_UINT, false, false},
     {0x2A2187, VK_FORMAT_A2B10G10R10_SNORM_PACK32, VK_FORMAT_R32_UINT, false, false},
-    // 10_11_11 and 11_11_10 normals: raw uint, decoded by the shader.
-    {0x2A2190, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
-    {0x2A2390, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
+    // Signed normalized 11_11_10 normals (X 10 bits, Y and Z 11): raw uint,
+    // decoded by the shader. Its decoder knows no other packed layout.
     {0x2A2191, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
-    {0x2A2391, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
     {0x2C235F, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_UINT, true, false},
     {0x1A2360, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UINT, true, false},
 };
@@ -1573,7 +1571,6 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
       return;
     }
   }
-
   // Indices rebased to the first uploaded vertex; quads become triangles.
   uint32_t draw_count = quads ? index_count / 4 * 6 : index_count;
   const Upload index_upload = AllocateUpload(size_t(draw_count) * sizeof(uint32_t), 16);

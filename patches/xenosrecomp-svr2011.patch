@@ -14,7 +14,7 @@ index 4a851c2..2932ea0 100644
  #elif defined(UNLEASHED_RECOMP)
      args[argCount++] = L"-DUNLEASHED_RECOMP";
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..60d4c9f 100644
+index 63c37c9..e0bb119 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
 @@ -42,7 +42,14 @@ struct PushConstants
@@ -102,6 +102,32 @@ index 63c37c9..60d4c9f 100644
  }
  
  #ifdef REBLUE_RECOMP
+@@ -271,6 +293,25 @@ float4 sintTexcoord(uint mask, float4 value, uint semanticIndex)
+     }
+     return value;
+ }
++#elif defined(SVR2011_RECOMP)
++// SvR 2011's normals are D3DDECLTYPE 0x2A2191, Xenos k_11_11_10: signed and
++// normalized, X in the low 10 bits, then Y and Z in 11 bits each. Only this
++// layout decodes the game's skin normals to unit length.
++float4 tfetchR11G11B10(uint4 value)
++{
++    if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
++    {
++        int v = int(value.x);
++        float3 n = float3((v << 22) >> 22, (v << 11) >> 21, v >> 21) / float3(511.0, 1023.0, 1023.0);
++        return float4(max(n, -1.0), 0.0);
++    }
++    return asfloat(value);
++}
++
++float4 tfetchTexcoord(uint swappedTexcoords, float4 value, uint semanticIndex)
++{
++    return (swappedTexcoords & (1ull << semanticIndex)) != 0 ? value.yxwz : value;
++}
+ #else
+ float4 tfetchR11G11B10(uint4 value)
+ {
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
 index feaa90b..8f51cc8 100644
 --- a/XenosRecomp/shader_recompiler.cpp
