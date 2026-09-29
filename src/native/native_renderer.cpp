@@ -41,6 +41,9 @@ REXCVAR_DEFINE_BOOL(svr_native_debug_no_blend, false, "SVR2011",
 REXCVAR_DEFINE_UINT64(svr_native_trace_ps, 0, "SVR2011",
                       "Native renderer debugging: in traced frames, dump the constants of draws "
                       "using this pixel shader hash");
+REXCVAR_DEFINE_BOOL(svr_native_half_pixel_offset, true, "SVR2011",
+                    "Native renderer: shift geometry by half a pixel for D3D9-style pixel "
+                    "centres, like the emulated path's half_pixel_offset");
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -105,6 +108,7 @@ enum Reg : uint32_t {
   RB_COLORCONTROL = 0x2202,
   PA_SU_SC_MODE_CNTL = 0x2205,
   PA_CL_VTE_CNTL = 0x2206,
+  PA_SU_VTX_CNTL = 0x2302,
   RB_COPY_CONTROL = 0x2318,
   RB_COPY_DEST_INFO = 0x231B,
   RB_DEPTH_CLEAR = 0x231D,
@@ -1069,6 +1073,16 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstan
   SwapCopy32(shared->booleans, d3d + kDeviceBooleans, 8);
   shared->swapped_texcoords = swapped_texcoords;
   shared->alpha_threshold = ReadRegFloat(d3d, RB_ALPHA_REF);
+  // Pixel centres at .0 (PA_SU_VTX_CNTL pix_center 0, as in D3D9): shift
+  // geometry by half a pixel right and down, as the emulated path does. The
+  // shader adds this in clip space before the viewport maps it to pixels.
+  if (REXCVAR_GET(svr_native_half_pixel_offset) && !(ReadReg(d3d, PA_SU_VTX_CNTL) & 1)) {
+    const uint32_t vte = ReadReg(d3d, PA_CL_VTE_CNTL);
+    const float x_scale = (vte & 1) ? ReadRegFloat(d3d, PA_CL_VPORT_XSCALE) : 1.0f;
+    const float y_scale = (vte & 4) ? ReadRegFloat(d3d, PA_CL_VPORT_YSCALE) : 1.0f;
+    shared->half_pixel_offset[0] = x_scale != 0.0f ? 0.5f / x_scale : 0.0f;
+    shared->half_pixel_offset[1] = y_scale != 0.0f ? 0.5f / y_scale : 0.0f;
+  }
   push.vertex_constants = upload.address;
   push.pixel_constants = upload.address + 4096;
   push.shared_constants = upload.address + 8192;
