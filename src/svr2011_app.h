@@ -5,6 +5,8 @@
 #include <rex/perf/counter.h>
 #include <rex/ui/window.h>
 
+#include "native/native_renderer.h"
+
 class Svr2011App : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -25,6 +27,7 @@ class Svr2011App : public rex::ReXApp {
     if (!path.empty()) {
       rex::perf::SetCsvLogPath(path);
     }
+    svr::native::Configure(runtime());
   }
 
   void OnPreLaunchModule() override {

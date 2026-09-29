@@ -8,6 +8,8 @@
 
 #include "generated/default/svr2011_pch.h"
 
+#include "native/native_renderer.h"
+
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -146,6 +148,7 @@ REX_HOOK_RAW(sub_82921360) {
 // D3DDevice_Present: the only caller of VdSwap, once per frame.
 DECLARE_REX_FUNC(sub_8291AED0);
 REX_HOOK_RAW(sub_8291AED0) {
+  svr::native::OnPresent();
   __imp__sub_8291AED0(ctx, base);
   const uint64_t presents = g_presents.fetch_add(1, std::memory_order_relaxed) + 1;
   if (presents % 60 == 0 && REXCVAR_GET(svr_d3d_census)) {

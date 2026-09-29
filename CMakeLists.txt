@@ -11,6 +11,7 @@ include(generated/rexglue.cmake)
 set(SVR2011_SOURCES
     src/main.cpp
     src/d3d_census.cpp
+    src/native/native_renderer.cpp
 )
 
 if(WIN32)
@@ -20,10 +21,13 @@ else()
 endif()
 
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
+target_include_directories(svr2011 PRIVATE src)
 
 # The v0.10.0 source-tree runtime does not propagate ImGui's include directory
 # to the host, although its public UI headers include imgui.h.
 if(REXSDK_DIR)
     target_include_directories(svr2011 PRIVATE
         $<TARGET_PROPERTY:imgui::imgui,INTERFACE_INCLUDE_DIRECTORIES>)
+    # The native renderer includes the SDK's Vulkan headers, which include RenderDoc's.
+    target_include_directories(svr2011 PRIVATE ${REXSDK_DIR}/thirdparty/renderdoc)
 endif()
