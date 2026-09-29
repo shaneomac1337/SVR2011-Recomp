@@ -23,6 +23,12 @@ namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
 namespace vk_util = rex::ui::vulkan::util;
 
+// Texture objects hold CPU-side addresses, device fetch constants the GPU's
+// physical ones; the 0xE0000000 range is offset by 0x1000.
+uint32_t ToPhysical(uint32_t address) {
+  return (address & 0x1FFFFFFF) + (address >= 0xE0000000 ? 0x1000 : 0);
+}
+
 uint32_t ByteSwap32(uint32_t v) {
   return (v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24);
 }
@@ -295,7 +301,7 @@ bool UploadTexture(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
       fetch.tiled ? texture_util::GetTiledAddressUpperBound2D(blocks_x, blocks_y, pitch_blocks,
                                                               info.bytes_per_block_log2)
                   : linear_row_bytes * blocks_y;
-  const uint8_t* source = TranslatePhysical(uint32_t(fetch.base_address) << 12);
+  const uint8_t* source = TranslatePhysical(ToPhysical(uint32_t(fetch.base_address) << 12));
   const uint64_t hash = XXH3_64bits(source, source_size);
   if (texture.uploaded && hash == texture.content_hash) {
     return false;
@@ -395,7 +401,7 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   if (fetch.dimension != xenos::DataDimension::k2DOrStacked) {
     return binding;
   }
-  const uint32_t base_address = uint32_t(fetch.base_address) << 12;
+  const uint32_t base_address = ToPhysical(uint32_t(fetch.base_address) << 12);
   const uint32_t swizzle = uint32_t(fetch.swizzle);
 
   const auto resolved = g.resolve_targets.find(base_address);
@@ -442,7 +448,7 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
 
 ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) {
   const xenos::xe_gpu_texture_fetch_t fetch = Decode(raw);
-  const uint32_t base_address = uint32_t(fetch.base_address) << 12;
+  const uint32_t base_address = ToPhysical(uint32_t(fetch.base_address) << 12);
   const uint32_t width = fetch.size_2d.width + 1;
   const uint32_t height = fetch.size_2d.height + 1;
   FormatInfo info = GetFormatInfo(fetch.format);
@@ -472,7 +478,7 @@ ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) 
 }
 
 ResolveTarget FindResolveTarget(uint32_t base_address) {
-  const auto it = g.resolve_targets.find(base_address);
+  const auto it = g.resolve_targets.find(ToPhysical(base_address));
   if (it == g.resolve_targets.end()) {
     return {};
   }

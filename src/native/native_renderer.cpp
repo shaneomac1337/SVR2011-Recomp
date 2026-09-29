@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -27,6 +28,13 @@ REXCVAR_DEFINE_BOOL(svr_native_renderer, false, "SVR2011",
 REXCVAR_DEFINE_INT32(svr_native_debug_target, 0, "SVR2011",
                      "Native renderer debugging: present the Nth render target created (1-based) "
                      "instead of the front buffer");
+REXCVAR_DEFINE_INT32(svr_native_trace_frame, -1, "SVR2011",
+                     "Native renderer debugging: log every event of this frame number");
+REXCVAR_DEFINE_UINT32(svr_native_debug_resolve, 0, "SVR2011",
+                      "Native renderer debugging: present the resolve target at this physical "
+                      "address instead of the front buffer");
+REXCVAR_DEFINE_BOOL(svr_native_debug_no_blend, false, "SVR2011",
+                    "Native renderer debugging: disable blending");
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -126,6 +134,13 @@ float ReadRegFloat(const uint8_t* d3d, uint32_t reg) {
   return value;
 }
 
+bool Tracing();
+
+#define TRACE(...)                                              \
+  do {                                                          \
+    if (Tracing()) REXLOG_INFO("native trace: " __VA_ARGS__); \
+  } while (0)
+
 void SwapCopy32(uint32_t* dst, const uint8_t* src, size_t dwords) {
   for (size_t i = 0; i < dwords; ++i) {
     dst[i] = LoadBE32(src + i * 4);
@@ -187,8 +202,11 @@ constexpr DeclType kDeclTypes[] = {
     {0x2C82A1, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, false},
     {0x2A2287, VK_FORMAT_A2B10G10R10_USCALED_PACK32, VK_FORMAT_R32_UINT, false, false},
     {0x2A2187, VK_FORMAT_A2B10G10R10_SNORM_PACK32, VK_FORMAT_R32_UINT, false, false},
+    // 10_11_11 and 11_11_10 normals: raw uint, decoded by the shader.
     {0x2A2190, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
     {0x2A2390, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
+    {0x2A2191, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
+    {0x2A2391, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
     {0x2C235F, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_UINT, true, false},
     {0x1A2360, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UINT, true, false},
 };
@@ -237,26 +255,45 @@ struct DeclEntry {
   VertexLayout layout;
 };
 
-// D3DVERTEXELEMENT9 (12 bytes, big-endian): stream, offset, type, method,
-// usage, usage index.
-uint32_t ParseElements(const uint8_t* p, uint32_t max_bytes, VertexLayout& layout) {
-  uint32_t count = 0;
-  for (uint32_t off = 0; off + 12 <= max_bytes && count < kMaxAttributes; off += 12) {
-    const uint16_t stream = LoadBE16(p + off);
-    const uint32_t type = LoadBE32(p + off + 4);
-    if (stream == 0xFF || type == 0xFFFFFFFF) {
-      break;
-    }
-    const uint16_t offset = LoadBE16(p + off + 2);
-    const uint8_t usage = p[off + 9];
-    const uint8_t usage_index = p[off + 10];
+// Declaration objects (verified): element count at +0x18, D3DVERTEXELEMENT9
+// array at +0x34 (12 bytes each, big-endian: stream, offset, type, method,
+// usage, usage index).
+constexpr uint32_t kDeclarationCount = 0x18;
+constexpr uint32_t kDeclarationElements = 0x34;
+
+const DeclEntry* GetDeclaration(const uint8_t* base, uint32_t object) {
+  static std::unordered_map<uint64_t, DeclEntry> cache;
+  static uint32_t logged = 0;
+  if (!object) {
+    return nullptr;
+  }
+  const uint8_t* p = base + object;
+  const uint32_t count = std::min<uint32_t>(LoadBE32(p + kDeclarationCount), kMaxAttributes);
+  const uint8_t* elements = p + kDeclarationElements;
+  const uint64_t key = uint64_t(object) << 32 ^ XXH3_64bits(elements, count * 12);
+  auto [it, inserted] = cache.try_emplace(key);
+  DeclEntry& entry = it->second;
+  if (!inserted) {
+    return entry.valid ? &entry : nullptr;
+  }
+  VertexLayout& layout = entry.layout;
+  std::string description;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* e = elements + i * 12;
+    const uint16_t stream = LoadBE16(e);
+    const uint16_t offset = LoadBE16(e + 2);
+    const uint32_t type = LoadBE32(e + 4);
+    const uint8_t usage = e[9];
+    const uint8_t usage_index = e[10];
+    description += fmt::format(" {}.{}@{}+{}:{:X}", usage, usage_index, stream, offset, type);
     const DeclType* decl_type = FindDeclType(type);
-    if (stream >= kMaxStreams || offset >= 256 || usage > 13 || usage_index > 15 ||
-        !decl_type) {
-      break;
-    }
-    ++count;
     const InputLocation* location = FindLocation(usage, usage_index);
+    if (!decl_type || stream >= kMaxStreams) {
+      REXLOG_WARN("native renderer: declaration {:08X} element {} has unsupported type {:X} "
+                  "(stream {})",
+                  object, i, type, stream);
+      continue;
+    }
     if (!location) {
       continue;
     }
@@ -273,34 +310,7 @@ uint32_t ParseElements(const uint8_t* p, uint32_t max_bytes, VertexLayout& layou
       layout.swapped_texcoords |= 1u << usage_index;
     }
   }
-  return count;
-}
-
-// The declaration object's element array sits after its D3DResource header;
-// the exact offset is found once per object by scanning for a valid array.
-const DeclEntry* GetDeclaration(const uint8_t* base, uint32_t object) {
-  static std::unordered_map<uint64_t, DeclEntry> cache;
-  static uint32_t logged = 0;
-  if (!object) {
-    return nullptr;
-  }
-  const uint8_t* p = base + object;
-  const uint64_t key = uint64_t(object) << 32 ^ XXH3_64bits(p, 256);
-  auto [it, inserted] = cache.try_emplace(key);
-  DeclEntry& entry = it->second;
-  if (!inserted) {
-    return entry.valid ? &entry : nullptr;
-  }
-  uint32_t found_offset = 0;
-  for (uint32_t off = 0x18; off <= 0xC0; off += 4) {
-    VertexLayout layout;
-    if (ParseElements(p + off, 256 - off, layout) > 0) {
-      entry.layout = layout;
-      entry.valid = true;
-      found_offset = off;
-      break;
-    }
-  }
+  entry.valid = layout.attribute_count > 0;
   for (const InputLocation& l : kInputLocations) {
     bool present = false;
     for (uint32_t i = 0; i < entry.layout.attribute_count; ++i) {
@@ -310,13 +320,9 @@ const DeclEntry* GetDeclaration(const uint8_t* base, uint32_t object) {
       entry.layout.dummy_locations |= 1u << l.location;
     }
   }
-  if (logged++ < 40) {
-    std::string dump;
-    for (uint32_t i = 0; i < 0x80; i += 4) {
-      dump += fmt::format(" {:08X}", LoadBE32(p + i));
-    }
-    REXLOG_INFO("native renderer: declaration {:08X} elements at +0x{:X} ({} attributes):{}",
-                object, found_offset, entry.layout.attribute_count, dump);
+  if (logged++ < 64) {
+    REXLOG_INFO("native renderer: declaration {:08X} (usage.index@stream+offset:type):{}",
+                object, description);
   }
   return entry.valid ? &entry : nullptr;
 }
@@ -480,6 +486,26 @@ struct State {
   Stats stats;
   uint32_t errors_logged = 0;
 } g;
+
+int64_t g_trace_frame = -1;
+
+bool Tracing() {
+  return int64_t(g.frame) == int64_t(REXCVAR_GET(svr_native_trace_frame)) ||
+         int64_t(g.frame) == g_trace_frame;
+}
+
+// Debugging: creating native_trace_request next to the executable traces the
+// next frame (checked twice a second).
+void PollTraceRequest() {
+  if (g.frame % 30 != 0) {
+    return;
+  }
+  std::error_code error;
+  if (std::filesystem::remove("native_trace_request", error)) {
+    g_trace_frame = int64_t(g.frame) + 1;
+    REXLOG_INFO("native renderer: tracing frame {}", g_trace_frame);
+  }
+}
 
 void ImageBarrier(VkCommandBuffer cb, VkImage image, VkImageAspectFlags aspect,
                   VkImageLayout old_layout, VkImageLayout new_layout) {
@@ -704,6 +730,9 @@ bool EnsureRendering(const uint8_t* d3d, bool need_depth) {
   g.rendering = true;
   g.active_color = color;
   g.active_depth = depth;
+  TRACE("begin rendering colour {}x{} fmt {} info {:08X} surface {:08X} depth {}", color->width,
+        color->height, uint32_t(color->format), ReadReg(d3d, RB_COLOR_INFO),
+        ReadReg(d3d, RB_SURFACE_INFO), depth ? "yes" : "no");
   g.bound_pipeline = VK_NULL_HANDLE;
   return true;
 }
@@ -805,7 +834,8 @@ VkPipeline GetPipeline(const PipelineKey& key) {
   blend_attachment.alphaBlendOp = BlendOp((bc >> 21) & 7);
   blend_attachment.dstAlphaBlendFactor = BlendFactor((bc >> 24) & 0x1F);
   // ONE, ZERO, ADD on both is the Xenos way of saying "no blending".
-  blend_attachment.blendEnable = (bc & 0x1FFF1FFF) != 0x00010001;
+  blend_attachment.blendEnable =
+      (bc & 0x1FFF1FFF) != 0x00010001 && !REXCVAR_GET(svr_native_debug_no_blend);
   blend_attachment.colorWriteMask = key.color_mask & 0xF;
   VkPipelineColorBlendStateCreateInfo blend = {
       VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -923,6 +953,9 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstan
     if ((LoadBE32(fetch_data) & 3) != 2) {
       continue;
     }
+    TRACE("  slot {} fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", slot, LoadBE32(fetch_data),
+          LoadBE32(fetch_data + 4), LoadBE32(fetch_data + 8), LoadBE32(fetch_data + 12),
+          LoadBE32(fetch_data + 16), LoadBE32(fetch_data + 20));
     const textures::Binding binding = textures::Bind(textures::LoadFetchConstant(fetch_data),
                                                      g.slot->upload_cb, g.frame);
     switch (binding.dimension) {
@@ -992,6 +1025,8 @@ void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t
     return;
   }
   ++g.stats.clears;
+  TRACE("clear flags {:X} rect {} {} {} {} colour {} depth {}", flags, rect[0], rect[1], rect[2],
+        rect[3], color ? LoadBEFloat(base + color) : -1.0f, depth);
   VkClearAttachment attachments[2] = {};
   uint32_t count = 0;
   if (clear_color) {
@@ -1043,6 +1078,15 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination) {
                 source ? "found" : "none");
   }
   ++g.stats.resolves;
+  if (Tracing()) {
+    const uint8_t* dest_fetch = base + destination + kTextureFetchConstant;
+    TRACE("resolve dest {:08X} fetch {:08X} {:08X} {:08X} copy_control {:08X} dest_info {:08X} "
+          "source {} {}x{}",
+          destination, destination ? LoadBE32(dest_fetch) : 0,
+          destination ? LoadBE32(dest_fetch + 4) : 0, destination ? LoadBE32(dest_fetch + 8) : 0,
+          copy_control, dest_info, source ? "found" : "none", source ? source->width : 0,
+          source ? source->height : 0);
+  }
   EndRendering();
   const VkCommandBuffer cb = g.slot->main_cb;
   if (destination && source && copy_command != 3) {
@@ -1269,6 +1313,8 @@ void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
     dfn.vkCmdDraw(cb, vertex_count, 1, 0, 0);
   }
   ++g.stats.drawn;
+  TRACE("draw vertices prim {} count {} stride {} blend {:08X} depthctl {:08X}", primitive,
+        vertex_count, stride, ReadReg(d3d, RB_BLENDCONTROL0), ReadReg(d3d, RB_DEPTHCONTROL));
 }
 
 void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
@@ -1380,6 +1426,22 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
   dfn.vkCmdBindIndexBuffer(cb, index_upload.buffer, index_upload.offset, VK_INDEX_TYPE_UINT32);
   dfn.vkCmdDrawIndexed(cb, draw_count, 1, 0, 0, 0);
   ++g.stats.drawn_indexed;
+  TRACE("draw indexed prim {} indices {} blend {:08X} depthctl {:08X}", primitive, index_count,
+        ReadReg(d3d, RB_BLENDCONTROL0), ReadReg(d3d, RB_DEPTHCONTROL));
+  if (Tracing()) {
+    std::string c;
+    for (uint32_t i = 0; i < 16; ++i) {
+      c += fmt::format(" {:.3f}", LoadBEFloat(d3d + kDeviceVertexConstants + i * 4));
+    }
+    TRACE("  vte {:08X} vport {:.1f} {:.1f} {:.1f} {:.1f} {:.3f} {:.3f} mode {:08X} vs c0-3:{}",
+          ReadReg(d3d, PA_CL_VTE_CNTL), ReadRegFloat(d3d, PA_CL_VPORT_XSCALE),
+          ReadRegFloat(d3d, PA_CL_VPORT_XOFFSET), ReadRegFloat(d3d, PA_CL_VPORT_YSCALE),
+          ReadRegFloat(d3d, PA_CL_VPORT_YOFFSET), ReadRegFloat(d3d, PA_CL_VPORT_ZSCALE),
+          ReadRegFloat(d3d, PA_CL_VPORT_ZOFFSET), ReadReg(d3d, PA_SU_SC_MODE_CNTL), c);
+    TRACE("  vs {:08X} ps {:08X} first vertex {} verts {} streams {:X} fetch0 {:08X}",
+          LoadBE32(d3d + kDeviceVertexShader), LoadBE32(d3d + kDevicePixelShader), first_vertex,
+          vertex_count, layout->stream_mask, LoadBE32(d3d + kDeviceStreamFetch));
+  }
 }
 
 void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
@@ -1410,6 +1472,12 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
     const textures::FetchConstant fetch =
         textures::LoadFetchConstant(base + front_buffer + kTextureFetchConstant);
     source = textures::FindResolveTarget(fetch.dwords[1] & 0xFFFFF000);
+  }
+  if (const uint32_t debug_resolve = REXCVAR_GET(svr_native_debug_resolve)) {
+    const textures::ResolveTarget target = textures::FindResolveTarget(debug_resolve);
+    if (target.image) {
+      source = target;
+    }
   }
   const int32_t debug_target = REXCVAR_GET(svr_native_debug_target);
   if (debug_target > 0 && size_t(debug_target) <= g.render_target_order.size()) {
@@ -1466,6 +1534,7 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   frame.sequence = g.frame;
   rex::system::external_frame::Publish(frame);
   ++g.frame;
+  PollTraceRequest();
 }
 
 }  // namespace svr::native
