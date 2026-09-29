@@ -36,23 +36,23 @@ void DumpDds(uint32_t address, VkFormat format, uint32_t width, uint32_t height,
   header[2] = 0x1 | 0x2 | 0x4 | 0x1000;
   header[3] = height;
   header[4] = width;
-  header[20] = 32;
+  header[19] = 32;
   switch (format) {
-    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: header[21] = 0x4; header[22] = 0x31545844; break;
-    case VK_FORMAT_BC2_UNORM_BLOCK: header[21] = 0x4; header[22] = 0x33545844; break;
-    case VK_FORMAT_BC3_UNORM_BLOCK: header[21] = 0x4; header[22] = 0x35545844; break;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: header[20] = 0x4; header[21] = 0x31545844; break;
+    case VK_FORMAT_BC2_UNORM_BLOCK: header[20] = 0x4; header[21] = 0x33545844; break;
+    case VK_FORMAT_BC3_UNORM_BLOCK: header[20] = 0x4; header[21] = 0x35545844; break;
     case VK_FORMAT_R8G8B8A8_UNORM:
-      header[21] = 0x41;
-      header[23] = 32;
-      header[24] = 0xFF;
-      header[25] = 0xFF00;
-      header[26] = 0xFF0000;
-      header[27] = 0xFF000000;
+      header[20] = 0x41;
+      header[22] = 32;
+      header[23] = 0xFF;
+      header[24] = 0xFF00;
+      header[25] = 0xFF0000;
+      header[26] = 0xFF000000;
       break;
     default:
       return;
   }
-  header[28] = 0x1000;
+  header[27] = 0x1000;
   const std::string path = fmt::format("native_texture_{:08X}.dds", address);
   if (FILE* file = std::fopen(path.c_str(), "wb")) {
     std::fwrite(header, 1, sizeof(header), file);
@@ -122,6 +122,8 @@ struct Texture {
   VkFormat format = VK_FORMAT_UNDEFINED;
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t levels = 1;
+  uint32_t layers = 1;
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
   // Guest swizzle (12 bits) -> bindless index of a view with that mapping.
   std::unordered_map<uint32_t, uint32_t> views;
@@ -145,13 +147,13 @@ struct State {
 
 bool CreateImage(Texture& texture, VkImageType type, VkFormat format, uint32_t width,
                  uint32_t height, uint32_t depth, uint32_t layers, VkImageCreateFlags flags,
-                 VkImageUsageFlags usage) {
+                 VkImageUsageFlags usage, uint32_t levels = 1) {
   VkImageCreateInfo image_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   image_info.flags = flags;
   image_info.imageType = type;
   image_info.format = format;
   image_info.extent = {width, height, depth};
-  image_info.mipLevels = 1;
+  image_info.mipLevels = levels;
   image_info.arrayLayers = layers;
   image_info.samples = VK_SAMPLE_COUNT_1_BIT;
   image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -166,6 +168,8 @@ bool CreateImage(Texture& texture, VkImageType type, VkFormat format, uint32_t w
   texture.format = format;
   texture.width = width;
   texture.height = height;
+  texture.levels = levels;
+  texture.layers = layers;
   return true;
 }
 
@@ -224,8 +228,8 @@ void Barrier(VkCommandBuffer cb, Texture& texture, VkImageLayout new_layout,
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = texture.image;
+  // All levels and layers.
   barrier.subresourceRange = vk_util::InitializeSubresourceRange();
-  barrier.subresourceRange.layerCount = layers;
   g_vk.dfn->vkCmdPipelineBarrier(cb, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1,
                                  &barrier);
   texture.layout = new_layout;
@@ -266,11 +270,12 @@ VkSamplerAddressMode AddressMode(uint32_t clamp) {
   }
 }
 
-uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch) {
+uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t min_level = 0,
+                      uint32_t max_level = 15) {
   const uint32_t key = uint32_t(fetch.clamp_x) | uint32_t(fetch.clamp_y) << 3 |
                        uint32_t(fetch.clamp_z) << 6 | uint32_t(fetch.mag_filter) << 9 |
                        uint32_t(fetch.min_filter) << 11 | uint32_t(fetch.mip_filter) << 13 |
-                       uint32_t(fetch.border_color) << 15;
+                       uint32_t(fetch.border_color) << 15 | min_level << 17 | max_level << 21;
   const auto it = g.samplers.find(key);
   if (it != g.samplers.end()) {
     return it->second;
@@ -283,7 +288,9 @@ uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch) {
   sampler_info.addressModeU = AddressMode(uint32_t(fetch.clamp_x));
   sampler_info.addressModeV = AddressMode(uint32_t(fetch.clamp_y));
   sampler_info.addressModeW = AddressMode(uint32_t(fetch.clamp_z));
-  sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+  // The image holds levels 0..max_level; kBaseMap samples the first only.
+  sampler_info.minLod = float(min_level);
+  sampler_info.maxLod = uint32_t(fetch.mip_filter) == 2 ? float(min_level) : float(max_level);
   switch (uint32_t(fetch.border_color)) {
     case 1: sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK; break;
     case 2: sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; break;
@@ -330,64 +337,125 @@ void EndianSwap(uint8_t* data, size_t size, xenos::Endian endian) {
 
 // Uploads mip 0 of a 2D texture from guest memory; false when the data is
 // unchanged since the last upload.
-bool UploadTexture(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
-            const FormatInfo& info, VkCommandBuffer cb) {
-  const uint32_t block = info.block_size;
-  const uint32_t bytes_per_block = 1u << info.bytes_per_block_log2;
-  const uint32_t blocks_x = (texture.width + block - 1) / block;
-  const uint32_t blocks_y = (texture.height + block - 1) / block;
-  const uint32_t pitch_blocks = (uint32_t(fetch.pitch) << 5) / block;
-  const uint32_t linear_row_bytes =
-      (pitch_blocks * bytes_per_block + xenos::kTextureLinearRowAlignmentBytes - 1) &
-      ~(xenos::kTextureLinearRowAlignmentBytes - 1);
-  const uint32_t source_size =
-      fetch.tiled ? texture_util::GetTiledAddressUpperBound2D(blocks_x, blocks_y, pitch_blocks,
-                                                              info.bytes_per_block_log2)
-                  : linear_row_bytes * blocks_y;
-  const uint8_t* source = TranslatePhysical(ToPhysical(uint32_t(fetch.base_address) << 12));
-  const uint64_t hash = XXH3_64bits(source, source_size);
+// Guest texture: 2D or cube, all mip levels (base from base_page, the rest
+// from mip_page, with the packed mip tail) per the SDK's guest layout.
+struct GuestTexture {
+  xenos::xe_gpu_texture_fetch_t fetch;
+  FormatInfo info;
+  uint32_t width;
+  uint32_t height;
+  uint32_t layers;
+  uint32_t base_page;
+  uint32_t mip_page;
+  uint32_t min_level;
+  uint32_t max_level;
+};
+
+// Uploads every level from guest memory; false when the data is unchanged
+// since the last upload.
+bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb) {
+  const xenos::xe_gpu_texture_fetch_t& fetch = t.fetch;
+  const uint32_t block = t.info.block_size;
+  const uint32_t bpb_log2 = t.info.bytes_per_block_log2;
+  const uint32_t bytes_per_block = 1u << bpb_log2;
+  const texture_util::TextureGuestLayout layout = texture_util::GetGuestTextureLayout(
+      fetch.dimension, uint32_t(fetch.pitch), t.width, t.height, t.layers, fetch.tiled,
+      fetch.format, fetch.packed_mips, t.base_page != 0, t.max_level);
+  const uint8_t* base = t.base_page ? TranslatePhysical(t.base_page << 12) : nullptr;
+  const uint8_t* mips = t.mip_page ? TranslatePhysical(t.mip_page << 12) : nullptr;
+  uint64_t hash = 0;
+  if (base) {
+    hash = XXH3_64bits(base, layout.base.level_data_extent_bytes);
+  }
+  if (mips && t.max_level) {
+    hash ^= XXH3_64bits(mips, layout.mips_total_extent_bytes) * 31;
+  }
   if (texture.uploaded && hash == texture.content_hash) {
     return false;
   }
-  const uint32_t row_bytes = blocks_x * bytes_per_block;
-  const Upload upload = AllocateUpload(VkDeviceSize(row_bytes) * blocks_y, 16);
+
+  // Host copy: level by level, each layer tightly packed.
+  size_t total = 0;
+  for (uint32_t level = 0; level <= t.max_level; ++level) {
+    const uint32_t bx = (std::max(t.width >> level, 1u) + block - 1) / block;
+    const uint32_t by = (std::max(t.height >> level, 1u) + block - 1) / block;
+    total += size_t(bx) * by * bytes_per_block * t.layers;
+  }
+  const Upload upload = AllocateUpload(total, 16);
   if (!upload.data) {
     return false;
   }
   texture.content_hash = hash;
   texture.uploaded = true;
 
-  for (uint32_t y = 0; y < blocks_y; ++y) {
-    uint8_t* row = upload.data + size_t(y) * row_bytes;
-    if (fetch.tiled) {
-      for (uint32_t x = 0; x < blocks_x; ++x) {
-        const int32_t offset = texture_util::GetTiledOffset2D(int32_t(x), int32_t(y),
-                                                             pitch_blocks,
-                                                             info.bytes_per_block_log2);
-        std::memcpy(row + x * bytes_per_block, source + offset, bytes_per_block);
-      }
-    } else {
-      std::memcpy(row, source + size_t(y) * linear_row_bytes, row_bytes);
+  VkBufferImageCopy regions[16] = {};
+  uint32_t region_count = 0;
+  size_t offset = 0;
+  for (uint32_t level = 0; level <= t.max_level; ++level) {
+    const uint32_t level_width = std::max(t.width >> level, 1u);
+    const uint32_t level_height = std::max(t.height >> level, 1u);
+    const uint32_t bx = (level_width + block - 1) / block;
+    const uint32_t by = (level_height + block - 1) / block;
+    const size_t row_bytes = size_t(bx) * bytes_per_block;
+    // Where the level is stored: the base, a mip, or inside the packed tail.
+    const bool from_base = level == 0;
+    const uint8_t* source = from_base ? base : mips;
+    const uint32_t stored_level = std::min(level, layout.packed_level);
+    const texture_util::TextureGuestLayout::Level& stored =
+        from_base ? layout.base : layout.mips[stored_level];
+    if (!from_base) {
+      source = mips ? mips + layout.mip_offsets_bytes[stored_level] : nullptr;
     }
+    uint32_t tail_x = 0, tail_y = 0, tail_z = 0;
+    if (level >= layout.packed_level) {
+      texture_util::GetPackedMipOffset(t.width, t.height, 1, fetch.format, level, tail_x, tail_y,
+                                       tail_z);
+    }
+    const uint32_t pitch_blocks = stored.row_pitch_bytes >> bpb_log2;
+    for (uint32_t layer = 0; layer < t.layers; ++layer) {
+      uint8_t* dest = upload.data + offset + size_t(layer) * row_bytes * by;
+      if (!source) {
+        std::memset(dest, 0, row_bytes * by);
+        continue;
+      }
+      const uint8_t* layer_source = source + size_t(layer) * stored.array_slice_stride_bytes;
+      for (uint32_t y = 0; y < by; ++y) {
+        uint8_t* row = dest + size_t(y) * row_bytes;
+        if (fetch.tiled) {
+          for (uint32_t x = 0; x < bx; ++x) {
+            const int32_t tiled = texture_util::GetTiledOffset2D(
+                int32_t(x + tail_x), int32_t(y + tail_y), pitch_blocks, bpb_log2);
+            std::memcpy(row + x * bytes_per_block, layer_source + tiled, bytes_per_block);
+          }
+        } else {
+          std::memcpy(row,
+                      layer_source + size_t(y + tail_y) * stored.row_pitch_bytes +
+                          size_t(tail_x) * bytes_per_block,
+                      row_bytes);
+        }
+      }
+    }
+    VkBufferImageCopy& region = regions[region_count++];
+    region.bufferOffset = upload.offset + offset;
+    region.bufferRowLength = bx * block;
+    region.bufferImageHeight = by * block;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, t.layers};
+    region.imageExtent = {level_width, level_height, 1};
+    offset += row_bytes * by * t.layers;
   }
-  EndianSwap(upload.data, size_t(row_bytes) * blocks_y, fetch.endianness);
+  EndianSwap(upload.data, total, fetch.endianness);
   if (const uint32_t dump = REXCVAR_GET(svr_native_dump_texture);
-      dump && dump == ToPhysical(uint32_t(fetch.base_address) << 12)) {
-    DumpDds(dump, info.format, texture.width, texture.height, upload.data,
-            size_t(row_bytes) * blocks_y);
+      dump && dump == t.base_page << 12) {
+    DumpDds(dump, t.info.format, t.width, t.height, upload.data,
+            size_t((t.width + block - 1) / block) * ((t.height + block - 1) / block) *
+                bytes_per_block);
   }
 
   Barrier(cb, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
-  VkBufferImageCopy region = {};
-  region.bufferOffset = upload.offset;
-  region.bufferRowLength = blocks_x * block;
-  region.bufferImageHeight = blocks_y * block;
-  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.imageExtent = {texture.width, texture.height, 1};
   g_vk.dfn->vkCmdCopyBufferToImage(cb, upload.buffer, texture.image,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, regions);
   Barrier(cb, texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
           VK_ACCESS_TRANSFER_WRITE_BIT,
           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -439,58 +507,85 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   if (!g.defaults_ready) {
     PrepareDefaults(upload_cb);
   }
-  const xenos::xe_gpu_texture_fetch_t fetch = Decode(raw);
+  GuestTexture t;
+  t.fetch = Decode(raw);
+  const xenos::xe_gpu_texture_fetch_t& fetch = t.fetch;
   Binding binding;
   if (uint32_t(fetch.type) != 2) {
     return binding;
   }
   binding.dimension = uint32_t(fetch.dimension);
-  binding.sampler_index = SamplerIndex(fetch);
-  if (fetch.dimension != xenos::DataDimension::k2DOrStacked) {
+  const bool cube = fetch.dimension == xenos::DataDimension::kCube;
+  if (fetch.dimension != xenos::DataDimension::k2DOrStacked && !cube) {
+    binding.sampler_index = SamplerIndex(fetch);
     return binding;
   }
   const uint32_t base_address = ToPhysical(uint32_t(fetch.base_address) << 12);
   const uint32_t swizzle = uint32_t(fetch.swizzle);
 
-  const auto resolved = g.resolve_targets.find(base_address);
-  if (resolved != g.resolve_targets.end()) {
-    binding.texture_index =
-        ViewIndex(*resolved->second, swizzle, kHeapTexture2D, VK_IMAGE_VIEW_TYPE_2D);
-    return binding;
+  if (!cube) {
+    const auto resolved = g.resolve_targets.find(base_address);
+    if (resolved != g.resolve_targets.end()) {
+      binding.sampler_index = SamplerIndex(fetch, 0, 0);
+      binding.texture_index =
+          ViewIndex(*resolved->second, swizzle, kHeapTexture2D, VK_IMAGE_VIEW_TYPE_2D);
+      return binding;
+    }
   }
 
-  const FormatInfo info = GetFormatInfo(fetch.format);
-  if (info.format == VK_FORMAT_UNDEFINED) {
+  t.info = GetFormatInfo(fetch.format);
+  if (t.info.format == VK_FORMAT_UNDEFINED) {
+    binding.sampler_index = SamplerIndex(fetch);
     if (g.unsupported_logged++ < 16) {
       REXLOG_WARN("native renderer: texture format {} not supported yet",
                   uint32_t(fetch.format));
     }
     return binding;
   }
-  const uint32_t width = fetch.size_2d.width + 1;
-  const uint32_t height = fetch.size_2d.height + 1;
-  const uint64_t key = uint64_t(base_address) | uint64_t(fetch.format) << 32 |
-                       uint64_t(fetch.tiled) << 38 | uint64_t(fetch.pitch) << 39 |
-                       uint64_t(fetch.endianness) << 48 |
-                       uint64_t(XXH3_64bits(&fetch.dword_2, 4) & 0x3FFF) << 50;
+  uint32_t width_minus_1, height_minus_1, depth_minus_1;
+  texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
+                                                 &depth_minus_1, &t.base_page, &t.mip_page,
+                                                 &t.min_level, &t.max_level);
+  t.width = width_minus_1 + 1;
+  t.height = height_minus_1 + 1;
+  // Stacked 2D arrays use their first layer for now.
+  t.layers = cube ? 6 : 1;
+  if (t.base_page) {
+    t.base_page = ToPhysical(t.base_page << 12) >> 12;
+  }
+  if (t.mip_page) {
+    t.mip_page = ToPhysical(t.mip_page << 12) >> 12;
+  }
+  binding.sampler_index = SamplerIndex(fetch, t.min_level, t.max_level);
+  if (!t.base_page && !t.mip_page) {
+    return binding;
+  }
+
+  const uint64_t key =
+      XXH3_64bits(&fetch, sizeof(fetch.dword_0) * 3) ^
+      (uint64_t(t.mip_page) << 40 | uint64_t(t.max_level) << 32 | uint64_t(fetch.packed_mips) << 36);
   std::unique_ptr<Texture>& slot = g.textures[key];
   if (!slot) {
     slot = std::make_unique<Texture>();
-    if (!CreateImage(*slot, VK_IMAGE_TYPE_2D, info.format, width, height, 1, 1, 0,
-                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
-      REXLOG_ERROR("native renderer: could not create a {}x{} texture", width, height);
+    if (!CreateImage(*slot, VK_IMAGE_TYPE_2D, t.info.format, t.width, t.height, 1, t.layers,
+                     cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                     t.max_level + 1)) {
+      REXLOG_ERROR("native renderer: could not create a {}x{} texture", t.width, t.height);
       return binding;
     }
   }
   Texture& texture = *slot;
   if (texture.checked_frame != frame) {
     texture.checked_frame = frame;
-    UploadTexture(texture, fetch, info, upload_cb);
+    UploadTexture(texture, t, upload_cb);
   }
   if (!texture.uploaded) {
     return binding;
   }
-  binding.texture_index = ViewIndex(texture, swizzle, kHeapTexture2D, VK_IMAGE_VIEW_TYPE_2D);
+  binding.texture_index =
+      cube ? ViewIndex(texture, swizzle, kHeapTextureCube, VK_IMAGE_VIEW_TYPE_CUBE)
+           : ViewIndex(texture, swizzle, kHeapTexture2D, VK_IMAGE_VIEW_TYPE_2D);
   return binding;
 }
 
