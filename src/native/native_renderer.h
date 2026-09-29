@@ -2,6 +2,9 @@
 // GPU plugin's device and hands each finished frame to the plugin's present
 // path (rex/system/external_frame.h), replacing Xenos emulation for drawing.
 // Enabled with --svr_native_renderer=true; see the Native Renderer PRD.
+//
+// All entry points run on the guest render thread. Each is called after the
+// original D3D function, so the device's register mirror is up to date.
 
 #pragma once
 
@@ -17,11 +20,30 @@ namespace svr::native {
 // cvar is set. Call after the graphics system is set up.
 void Configure(rex::Runtime* runtime);
 
-// Guest render thread, before the original D3DDevice_Present runs.
-void OnPresent();
+bool IsEnabled();
 
-// Guest render thread, before an original D3D draw runs: base is guest memory,
-// device the guest D3DDevice.
-void OnDraw(const uint8_t* base, uint32_t device);
+// base is guest memory, device the guest D3DDevice.
+
+// D3DDevice_Present: front_buffer is the texture object shown.
+void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer);
+
+// D3DDevice_SetRenderTarget: index and surface object.
+void OnSetRenderTarget(const uint8_t* base, uint32_t index, uint32_t surface);
+
+// D3DDevice_Clear: flags (0xF colour, 0x10 depth, 0x20 stencil), rect in
+// pixels, colour as a guest float4 pointer (may be 0), depth and stencil.
+void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t rect[4],
+             uint32_t color, float depth, uint32_t stencil);
+
+// D3DDevice_Resolve: destination texture object (0 for a clear-only resolve).
+void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination);
+
+// Quad and strip draws from BeginVertices / EndVertices: the vertices the
+// game copied to guest address vertices.
+void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
+                    uint32_t vertex_count, uint32_t stride, uint32_t vertices);
+
+// D3DDevice_DrawIndexedVertices (not drawn yet; counted).
+void OnDrawIndexed(const uint8_t* base, uint32_t device);
 
 }  // namespace svr::native

@@ -153,7 +153,6 @@ void Probe(const char* name, const PPCContext& ctx, const uint8_t* base, uint32_
     __imp__sub_##address(ctx, base);  \
   }
 
-SVR_PROBE_HOOK(8291F168, "Clear")
 SVR_PROBE_HOOK(8291DD70, "SetStreamSource")
 SVR_PROBE_HOOK(8291DE90, "SetIndices")
 SVR_PROBE_HOOK(82920F78, "SetVertexDeclaration")
@@ -166,24 +165,67 @@ SVR_PROBE_HOOK(82917EC8, "SetTexture")
     __imp__sub_##address(ctx, base);        \
   }
 
-// D3DDevice_DrawIndexedVertices / DrawVerticesUP: r3 = device, whose register
-// mirror holds the draw's complete state.
+// D3DDevice_DrawIndexedVertices: r3 = device, whose register mirror holds the
+// draw's complete state once the original has committed it.
 DECLARE_REX_FUNC(sub_82921B58);
 REX_HOOK_RAW(sub_82921B58) {
   Count(kDrawIndexedVertices);
   static uint32_t probe_calls = 0;
   Probe("DrawIndexedVertices", ctx, base, probe_calls);
-  svr::native::OnDraw(base, ctx.r3.u32);
+  const uint32_t device = ctx.r3.u32;
   __imp__sub_82921B58(ctx, base);
+  svr::native::OnDrawIndexed(base, device);
 }
+
+// D3DDevice_BeginVertices: r4 = primitive, r5 = vertex count, r6 = stride;
+// returns the guest pointer the game copies the vertices into. The draw is
+// complete in EndVertices.
+namespace {
+struct PendingVertices {
+  uint32_t device = 0;
+  uint32_t primitive = 0;
+  uint32_t count = 0;
+  uint32_t stride = 0;
+  uint32_t vertices = 0;
+} g_pending_vertices;
+}  // namespace
 
 DECLARE_REX_FUNC(sub_82921698);
 REX_HOOK_RAW(sub_82921698) {
   Count(kDrawVerticesUP);
   static uint32_t probe_calls = 0;
-  Probe("DrawVerticesUP", ctx, base, probe_calls);
-  svr::native::OnDraw(base, ctx.r3.u32);
+  Probe("BeginVertices", ctx, base, probe_calls);
+  g_pending_vertices = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, 0};
   __imp__sub_82921698(ctx, base);
+  g_pending_vertices.vertices = ctx.r3.u32;
+}
+
+// D3DDevice_EndVertices: r3 = device.
+DECLARE_REX_FUNC(sub_82921688);
+REX_HOOK_RAW(sub_82921688) {
+  __imp__sub_82921688(ctx, base);
+  const PendingVertices pending = g_pending_vertices;
+  g_pending_vertices = {};
+  if (pending.vertices) {
+    svr::native::OnDrawVertices(base, pending.device, pending.primitive, pending.count,
+                                pending.stride, pending.vertices);
+  }
+}
+
+// D3DDevice_Clear: r4 = flags, r5 = -1, r6..r9 = rect, r10 = float4 colour
+// pointer, f1 = depth, stencil on the caller's stack.
+DECLARE_REX_FUNC(sub_8291F168);
+REX_HOOK_RAW(sub_8291F168) {
+  static uint32_t probe_calls = 0;
+  Probe("Clear", ctx, base, probe_calls);
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t flags = ctx.r4.u32;
+  const int32_t rect[4] = {ctx.r6.s32, ctx.r7.s32, ctx.r8.s32, ctx.r9.s32};
+  const uint32_t color = ctx.r10.u32;
+  const float depth = float(ctx.f1.f64);
+  const uint32_t stencil = LoadBE32(base + ctx.r1.u32 + 0x5C);
+  __imp__sub_8291F168(ctx, base);
+  svr::native::OnClear(base, device, flags, rect, color, depth, stencil);
 }
 
 // D3D internal: copies one register group from the device's register mirror
@@ -217,7 +259,10 @@ REX_HOOK_RAW(sub_82918A88) {
   Count(kResolve);
   static uint32_t probe_calls = 0;
   Probe("Resolve", ctx, base, probe_calls);
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t destination = ctx.r8.u32;
   __imp__sub_82918A88(ctx, base);
+  svr::native::OnResolve(base, device, destination);
 }
 
 DECLARE_REX_FUNC(sub_8291E618);
@@ -225,7 +270,10 @@ REX_HOOK_RAW(sub_8291E618) {
   Count(kSetRenderTarget);
   static uint32_t probe_calls = 0;
   Probe("SetRenderTarget", ctx, base, probe_calls);
+  const uint32_t index = ctx.r4.u32;
+  const uint32_t surface = ctx.r5.u32;
   __imp__sub_8291E618(ctx, base);
+  svr::native::OnSetRenderTarget(base, index, surface);
 }
 
 // D3DDevice_CreateVertexShader / CreatePixelShader: r3 = shader container.
@@ -253,7 +301,7 @@ DECLARE_REX_FUNC(sub_8291AED0);
 REX_HOOK_RAW(sub_8291AED0) {
   static uint32_t probe_calls = 0;
   Probe("Present", ctx, base, probe_calls);
-  svr::native::OnPresent();
+  svr::native::OnPresent(base, ctx.r3.u32, ctx.r4.u32);
   __imp__sub_8291AED0(ctx, base);
   const uint64_t presents = g_presents.fetch_add(1, std::memory_order_relaxed) + 1;
   if (presents % 60 == 0 && REXCVAR_GET(svr_d3d_census)) {

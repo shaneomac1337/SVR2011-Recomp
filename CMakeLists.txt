@@ -13,6 +13,8 @@ set(SVR2011_SOURCES
     src/d3d_census.cpp
     src/native/native_renderer.cpp
     src/native/shader_library.cpp
+    src/native/textures.cpp
+    src/native/vk_context.cpp
 )
 
 # Native renderer shaders: converted locally from the player's game by
@@ -32,6 +34,13 @@ else()
 endif()
 
 rexglue_setup_target(svr2011 GPU_PLUGINS xenos)
+
+# The native renderer un-tiles textures with the SDK's Xenos texture layout
+# code (BSD-3), which lives in the GPU plugin rather than the host runtime.
+if(REXSDK_DIR)
+    target_sources(svr2011 PRIVATE
+        ${REXSDK_DIR}/src/graphics/pipeline/texture/util.cpp)
+endif()
 target_include_directories(svr2011 PRIVATE src src/native)
 
 # zstd (decompression only) and smol-v unpack the converted shader cache; both
