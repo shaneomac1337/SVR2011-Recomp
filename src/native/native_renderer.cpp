@@ -504,6 +504,10 @@ struct State {
     uint64_t frame = 0;
   };
   std::vector<PendingReadback> pending_readbacks;
+  // Staging for depth resolves (depth aspect -> buffer -> R32 image).
+  VkBuffer depth_staging = VK_NULL_HANDLE;
+  VkDeviceMemory depth_staging_memory = VK_NULL_HANDLE;
+  VkDeviceSize depth_staging_size = 0;
   uint64_t readbacks_delivered = 0;
   std::vector<RenderTarget*> render_target_order;
   std::vector<uint32_t> index_scratch;
@@ -1158,6 +1162,68 @@ void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t
   g_vk.dfn->vkCmdClearAttachments(g.slot->main_cb, count, attachments, 1, &clear_rect);
 }
 
+namespace {
+
+// Copies the current depth target's depth into the destination as R32 float,
+// through a staging buffer since Vulkan cannot blit depth to colour.
+void ResolveDepth(const uint8_t* d3d, const textures::FetchConstant& fetch) {
+  const auto it = g.render_targets.find(
+      uint64_t(ReadReg(d3d, RB_DEPTH_INFO) & 0x10FFF) |
+      uint64_t(ReadReg(d3d, RB_SURFACE_INFO) & 0x3FFF) << 32 | 1ull << 63);
+  if (it == g.render_targets.end()) {
+    return;
+  }
+  RenderTarget& depth = *it->second;
+  const textures::ResolveTarget target = textures::GetResolveTarget(fetch, false);
+  if (!target.image || target.format != VK_FORMAT_R32_SFLOAT) {
+    return;
+  }
+  const uint32_t width = std::min(depth.width, target.width);
+  const uint32_t height = std::min(depth.height, target.height);
+  const VkDeviceSize size = VkDeviceSize(depth.width) * depth.height * 4;
+  if (g.depth_staging_size < size) {
+    if (g.depth_staging) {
+      // Frames still in flight may use the old buffer; it is small, so leak it.
+      g.depth_staging = VK_NULL_HANDLE;
+    }
+    if (!vk_util::CreateDedicatedAllocationBuffer(
+            g.device, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            vk_util::MemoryPurpose::kDeviceLocal, g.depth_staging, g.depth_staging_memory)) {
+      g.depth_staging_size = 0;
+      return;
+    }
+    g.depth_staging_size = size;
+  }
+  const VkCommandBuffer cb = g.slot->main_cb;
+  const auto& dfn = *g_vk.dfn;
+  TransitionTarget(depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  VkBufferImageCopy region = {};
+  region.bufferRowLength = depth.width;
+  region.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+  region.imageExtent = {width, height, 1};
+  dfn.vkCmdCopyImageToBuffer(cb, depth.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             g.depth_staging, 1, &region);
+  VkBufferMemoryBarrier buffer_barrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+  buffer_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  buffer_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  buffer_barrier.buffer = g.depth_staging;
+  buffer_barrier.size = VK_WHOLE_SIZE;
+  dfn.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                           0, nullptr, 1, &buffer_barrier, 0, nullptr);
+  ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT, *target.layout,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  dfn.vkCmdCopyBufferToImage(cb, g.depth_staging, target.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  *target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+}  // namespace
+
 void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t destination) {
   if (!g.device) {
     return;
@@ -1169,7 +1235,7 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t de
   const uint32_t source_select = copy_control & 7;
   const uint32_t copy_command = (copy_control >> 20) & 3;
   // Resolve flags 0..3 pick a colour target, 4 the depth-stencil surface
-  // (copied into a 24_8 texture; not implemented yet).
+  // (copied into a 24_8 texture as float depth).
   const bool depth_resolve = (flags & 7) == 4;
   RenderTarget* source =
       source_select < 4 && !depth_resolve ? CurrentColorTarget(d3d, false) : nullptr;
@@ -1192,6 +1258,9 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t de
   }
   EndRendering();
   const VkCommandBuffer cb = g.slot->main_cb;
+  if (destination && depth_resolve) {
+    ResolveDepth(d3d, textures::LoadFetchConstant(base + destination + kTextureFetchConstant));
+  }
   if (destination && source && copy_command != 3) {
     const textures::FetchConstant fetch =
         textures::LoadFetchConstant(base + destination + kTextureFetchConstant);

@@ -595,7 +595,11 @@ ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) 
   const uint32_t width = fetch.size_2d.width + 1;
   const uint32_t height = fetch.size_2d.height + 1;
   FormatInfo info = GetFormatInfo(fetch.format);
-  if (info.format == VK_FORMAT_UNDEFINED || info.block_size != 1) {
+  if (fetch.format == xenos::TextureFormat::k_24_8 ||
+      fetch.format == xenos::TextureFormat::k_24_8_FLOAT) {
+    // Depth resolves: the depth value as a float in X.
+    info.format = VK_FORMAT_R32_SFLOAT;
+  } else if (info.format == VK_FORMAT_UNDEFINED || info.block_size != 1) {
     info.format = VK_FORMAT_R8G8B8A8_UNORM;
   }
   std::unique_ptr<Texture>& slot = g.resolve_targets[base_address];

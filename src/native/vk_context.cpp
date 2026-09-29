@@ -1,5 +1,6 @@
 #include "native/vk_context.h"
 
+#include <algorithm>
 #include <vector>
 
 #include <rex/logging.h>
@@ -24,8 +25,15 @@ struct UploadRing {
   VkDeviceSize used = 0;
 };
 
-std::vector<UploadRing> g_rings;
-UploadRing* g_ring = nullptr;
+// Per frame slot: a list of chunks. A frame that outgrows the first chunk
+// gets more (kept for later frames), so work is never dropped.
+struct UploadSlot {
+  std::vector<UploadRing> chunks;
+  size_t current = 0;
+};
+std::vector<UploadSlot> g_slots;
+UploadSlot* g_slot = nullptr;
+VkDeviceSize g_chunk_size = 0;
 uint32_t g_next_descriptor[kHeapCount] = {};
 bool g_ring_full_logged = false;
 
@@ -177,38 +185,57 @@ const uint8_t* TranslatePhysical(uint32_t physical_address) {
 }
 
 bool CreateUploadRings(uint32_t count, VkDeviceSize size_each) {
-  g_rings.resize(count);
-  for (UploadRing& ring : g_rings) {
-    if (!CreateUploadRing(ring, size_each)) {
+  g_chunk_size = size_each;
+  g_slots.resize(count);
+  for (UploadSlot& slot : g_slots) {
+    slot.chunks.resize(1);
+    if (!CreateUploadRing(slot.chunks[0], size_each)) {
       return false;
     }
   }
-  g_ring = &g_rings[0];
+  g_slot = &g_slots[0];
   return true;
 }
 
 void BeginUploadFrame(uint32_t slot) {
-  g_ring = &g_rings[slot];
-  g_ring->used = 0;
+  g_slot = &g_slots[slot];
+  g_slot->current = 0;
+  for (UploadRing& chunk : g_slot->chunks) {
+    chunk.used = 0;
+  }
 }
 
 Upload AllocateUpload(VkDeviceSize size, VkDeviceSize alignment) {
-  UploadRing& ring = *g_ring;
-  const VkDeviceSize offset = (ring.used + alignment - 1) & ~(alignment - 1);
-  if (offset + size > ring.size) {
-    if (!g_ring_full_logged) {
-      g_ring_full_logged = true;
-      REXLOG_WARN("native renderer: upload ring full ({} bytes); dropping work", ring.size);
+  UploadSlot& slot = *g_slot;
+  for (;;) {
+    UploadRing& ring = slot.chunks[slot.current];
+    const VkDeviceSize offset = (ring.used + alignment - 1) & ~(alignment - 1);
+    if (offset + size <= ring.size) {
+      ring.used = offset + size;
+      Upload upload;
+      upload.data = ring.mapped + offset;
+      upload.buffer = ring.buffer;
+      upload.offset = offset;
+      upload.address = ring.address + offset;
+      return upload;
     }
-    return {};
+    if (slot.current + 1 < slot.chunks.size()) {
+      ++slot.current;
+      continue;
+    }
+    UploadRing chunk;
+    const VkDeviceSize chunk_size = std::max(g_chunk_size, size + alignment);
+    if (!CreateUploadRing(chunk, chunk_size)) {
+      if (!g_ring_full_logged) {
+        g_ring_full_logged = true;
+        REXLOG_WARN("native renderer: could not grow the upload ring; dropping work");
+      }
+      return {};
+    }
+    REXLOG_INFO("native renderer: upload ring grew to {} chunks", slot.chunks.size() + 1);
+    slot.chunks.push_back(chunk);
+    slot.current = slot.chunks.size() - 1;
   }
-  ring.used = offset + size;
-  Upload upload;
-  upload.data = ring.mapped + offset;
-  upload.buffer = ring.buffer;
-  upload.offset = offset;
-  upload.address = ring.address + offset;
-  return upload;
 }
 
 uint32_t AllocateDescriptor(DescriptorHeap heap) {
