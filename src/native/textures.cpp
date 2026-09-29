@@ -1,5 +1,6 @@
 #include "native/textures.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -18,6 +19,9 @@
 
 #include "native/vk_context.h"
 
+REXCVAR_DEFINE_INT32(svr_native_anisotropy, 3, "SVR2011",
+                     "Native renderer: anisotropic filtering for linear, mipmapped textures, as "
+                     "anisotropic_override (-1 = the game's setting, 0 = off, 1..5 = 1x..16x)");
 REXCVAR_DEFINE_UINT32(svr_native_dump_texture, 0, "SVR2011",
                       "Native renderer debugging: write the texture at this physical address "
                       "to native_texture_<address>.dds when it is uploaded");
@@ -139,7 +143,7 @@ struct State {
   std::unordered_map<uint64_t, std::unique_ptr<Texture>> textures;
   // Resolve destinations by physical base address.
   std::unordered_map<uint32_t, std::unique_ptr<Texture>> resolve_targets;
-  std::unordered_map<uint32_t, uint32_t> samplers;  // key -> bindless index
+  std::unordered_map<uint64_t, uint32_t> samplers;  // key -> bindless index
   Texture defaults[3];  // 2D, 3D, cube; bindless index 0 of each heap
   bool defaults_ready = false;
   uint32_t unsupported_logged = 0;
@@ -256,6 +260,29 @@ void PrepareDefaults(VkCommandBuffer cb) {
 
 VkFilter Filter(uint32_t filter) { return filter == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR; }
 
+// Maximum anisotropy for a sampler (1 = off). Follows the emulated path's
+// anisotropic_override: svr_native_anisotropy applies to linear, mipmapped
+// textures, otherwise the fetch constant's own setting is used; capped by the
+// device.
+float Anisotropy(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t min_level,
+                 uint32_t max_level) {
+  if (!g_vk.device->properties().samplerAnisotropy) {
+    return 1.0f;
+  }
+  uint32_t aniso = uint32_t(fetch.aniso_filter);
+  const int32_t override_level = REXCVAR_GET(svr_native_anisotropy);
+  const uint32_t mip_filter = uint32_t(fetch.mip_filter);
+  if (override_level >= 0 && override_level <= 5 && max_level > min_level &&
+      fetch.mag_filter == xenos::TextureFilter::kLinear &&
+      fetch.min_filter == xenos::TextureFilter::kLinear && mip_filter <= 1) {
+    aniso = uint32_t(override_level);
+  }
+  if (aniso == 0 || aniso > 5) {
+    return 1.0f;
+  }
+  return std::min(float(1u << (aniso - 1)), g_vk.device->properties().maxSamplerAnisotropy);
+}
+
 VkSamplerAddressMode AddressMode(uint32_t clamp) {
   switch (xenos::ClampMode(clamp)) {
     case xenos::ClampMode::kRepeat:
@@ -272,10 +299,12 @@ VkSamplerAddressMode AddressMode(uint32_t clamp) {
 
 uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t min_level = 0,
                       uint32_t max_level = 15) {
-  const uint32_t key = uint32_t(fetch.clamp_x) | uint32_t(fetch.clamp_y) << 3 |
-                       uint32_t(fetch.clamp_z) << 6 | uint32_t(fetch.mag_filter) << 9 |
-                       uint32_t(fetch.min_filter) << 11 | uint32_t(fetch.mip_filter) << 13 |
-                       uint32_t(fetch.border_color) << 15 | min_level << 17 | max_level << 21;
+  const uint32_t fields = uint32_t(fetch.clamp_x) | uint32_t(fetch.clamp_y) << 3 |
+                          uint32_t(fetch.clamp_z) << 6 | uint32_t(fetch.mag_filter) << 9 |
+                          uint32_t(fetch.min_filter) << 11 | uint32_t(fetch.mip_filter) << 13 |
+                          uint32_t(fetch.border_color) << 15 | min_level << 17 | max_level << 21;
+  const float anisotropy = Anisotropy(fetch, min_level, max_level);
+  const uint64_t key = uint64_t(fields) | uint64_t(anisotropy) << 32;
   const auto it = g.samplers.find(key);
   if (it != g.samplers.end()) {
     return it->second;
@@ -291,6 +320,13 @@ uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t min_l
   // The image holds levels 0..max_level; kBaseMap samples the first only.
   sampler_info.minLod = float(min_level);
   sampler_info.maxLod = uint32_t(fetch.mip_filter) == 2 ? float(min_level) : float(max_level);
+  if (anisotropy > 1.0f) {
+    // As in the emulated path, anisotropic filtering is fully linear.
+    sampler_info.magFilter = sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.anisotropyEnable = VK_TRUE;
+    sampler_info.maxAnisotropy = anisotropy;
+  }
   switch (uint32_t(fetch.border_color)) {
     case 1: sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK; break;
     case 2: sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; break;
