@@ -9,6 +9,7 @@
 #include "generated/default/svr2011_pch.h"
 
 #include "native/native_renderer.h"
+#include "native/shader_library.h"
 
 #include <atomic>
 #include <cstdint>
@@ -117,8 +118,22 @@ void DumpShaderContainer(const uint8_t* base, uint32_t guest_address, const char
     __imp__sub_##address(ctx, base);        \
   }
 
-SVR_COUNTING_HOOK(82921B58, kDrawIndexedVertices)
-SVR_COUNTING_HOOK(82921698, kDrawVerticesUP)
+// D3DDevice_DrawIndexedVertices / DrawVerticesUP: r3 = device, whose register
+// mirror holds the draw's complete state.
+DECLARE_REX_FUNC(sub_82921B58);
+REX_HOOK_RAW(sub_82921B58) {
+  Count(kDrawIndexedVertices);
+  svr::native::OnDraw(base, ctx.r3.u32);
+  __imp__sub_82921B58(ctx, base);
+}
+
+DECLARE_REX_FUNC(sub_82921698);
+REX_HOOK_RAW(sub_82921698) {
+  Count(kDrawVerticesUP);
+  svr::native::OnDraw(base, ctx.r3.u32);
+  __imp__sub_82921698(ctx, base);
+}
+
 SVR_COUNTING_HOOK(8291EC48, kClearRect)
 SVR_COUNTING_HOOK(82914F68, kDraw14F68)
 SVR_COUNTING_HOOK(829150C0, kDraw150C0)
@@ -134,15 +149,20 @@ SVR_COUNTING_HOOK(8291E618, kSetRenderTarget)
 DECLARE_REX_FUNC(sub_82921548);
 REX_HOOK_RAW(sub_82921548) {
   Count(kCreateVertexShader);
-  DumpShaderContainer(base, ctx.r3.u32, "vs");
+  const uint32_t container = ctx.r3.u32;
+  DumpShaderContainer(base, container, "vs");
   __imp__sub_82921548(ctx, base);
+  // Returns the shader object in r3.
+  svr::native::shader_library::OnShaderCreated(base + container, ctx.r3.u32, false);
 }
 
 DECLARE_REX_FUNC(sub_82921360);
 REX_HOOK_RAW(sub_82921360) {
   Count(kCreatePixelShader);
-  DumpShaderContainer(base, ctx.r3.u32, "ps");
+  const uint32_t container = ctx.r3.u32;
+  DumpShaderContainer(base, container, "ps");
   __imp__sub_82921360(ctx, base);
+  svr::native::shader_library::OnShaderCreated(base + container, ctx.r3.u32, true);
 }
 
 // D3DDevice_Present: the only caller of VdSwap, once per frame.

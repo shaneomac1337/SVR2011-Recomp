@@ -10,6 +10,8 @@
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/vulkan/util.h>
 
+#include "native/shader_library.h"
+
 REXCVAR_DEFINE_BOOL(svr_native_renderer, false, "SVR2011",
                     "Draw with the native Vulkan renderer instead of Xenos emulation "
                     "(experimental)");
@@ -40,7 +42,18 @@ struct State {
   uint32_t width = 1280;
   uint32_t height = 720;
   uint64_t frame = 0;
+  // Draws whose current shaders resolved to converted SPIR-V, since last log.
+  uint64_t draws = 0;
+  uint64_t draws_with_shaders = 0;
 } g;
+
+uint32_t LoadBE32(const uint8_t* p) {
+  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+}
+
+// Guest D3DDevice layout (SvR 2011's XDK): current shader objects.
+constexpr uint32_t kDevicePixelShader = 0x3244;
+constexpr uint32_t kDeviceVertexShader = 0x3248;
 
 bool CreateFrameSlot(FrameSlot& slot) {
   const VulkanDevice::Functions& dfn = g.device->functions();
@@ -131,7 +144,7 @@ void Configure(rex::Runtime* runtime) {
                        ? static_cast<rex::ui::vulkan::VulkanProvider*>(graphics_system->provider())
                        : nullptr;
   g.device = provider ? provider->vulkan_device() : nullptr;
-  if (!g.device || !CreateResources()) {
+  if (!g.device || !CreateResources() || !shader_library::Initialize(g.device)) {
     REXLOG_ERROR("native renderer: could not create Vulkan resources; using Xenos emulation");
     g.device = nullptr;
     return;
@@ -140,9 +153,29 @@ void Configure(rex::Runtime* runtime) {
   REXLOG_INFO("native renderer: enabled, output {}x{}", g.width, g.height);
 }
 
+void OnDraw(const uint8_t* base, uint32_t device) {
+  if (!g.device) {
+    return;
+  }
+  const uint8_t* d3d = base + device;
+  const NativeShader* vertex_shader = shader_library::Find(LoadBE32(d3d + kDeviceVertexShader));
+  const NativeShader* pixel_shader = shader_library::Find(LoadBE32(d3d + kDevicePixelShader));
+  ++g.draws;
+  if (vertex_shader && pixel_shader && !vertex_shader->is_pixel_shader &&
+      pixel_shader->is_pixel_shader) {
+    ++g.draws_with_shaders;
+  }
+}
+
 void OnPresent() {
   if (!g.device) {
     return;
+  }
+  if (g.frame % 300 == 0 && g.draws) {
+    REXLOG_INFO("native renderer: frame {}: {} of {} draws have converted shaders", g.frame,
+                g.draws_with_shaders, g.draws);
+    g.draws = 0;
+    g.draws_with_shaders = 0;
   }
   const VulkanDevice::Functions& dfn = g.device->functions();
   const VkDevice device = g.device->device();

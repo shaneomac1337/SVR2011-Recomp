@@ -33,6 +33,6 @@ $env:INCLUDE = "$($msvc.FullName)/include;$sdkInclude/ucrt;$sdkInclude/shared;$s
 $env:LIB = "$($msvc.FullName)/lib/x64;$sdkLib/ucrt/x64;$sdkLib/um/x64"
 $build = "$projectRoot/out/build/xenosrecomp"
 Invoke-Hidden $cmake @('-S', $source, '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
-    '-DCMAKE_C_COMPILER=clang', '-DCMAKE_CXX_COMPILER=clang++', '-DCMAKE_CXX_FLAGS=-DSVR2011_RECOMP') -LogPath "$projectRoot/analysis/configure-xenosrecomp.log"
+    '-DCMAKE_C_COMPILER=clang', '-DCMAKE_CXX_COMPILER=clang++', '-DCMAKE_CXX_FLAGS=-DSVR2011_RECOMP', '-DXENOS_RECOMP_DXIL=OFF') -LogPath "$projectRoot/analysis/configure-xenosrecomp.log"
 Invoke-Hidden $cmake @('--build', $build, '--parallel') -LogPath "$projectRoot/analysis/build-xenosrecomp.log"
 Write-Output "XenosRecomp built: $build/XenosRecomp/XenosRecomp.exe"
