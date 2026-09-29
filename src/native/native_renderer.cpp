@@ -33,8 +33,14 @@ REXCVAR_DEFINE_INT32(svr_native_trace_frame, -1, "SVR2011",
 REXCVAR_DEFINE_UINT32(svr_native_debug_resolve, 0, "SVR2011",
                       "Native renderer debugging: present the resolve target at this physical "
                       "address instead of the front buffer");
+REXCVAR_DEFINE_UINT32(svr_native_debug_null_slots, 0, "SVR2011",
+                      "Native renderer debugging: bitmask of texture fetch slots bound to the "
+                      "default texture");
 REXCVAR_DEFINE_BOOL(svr_native_debug_no_blend, false, "SVR2011",
                     "Native renderer debugging: disable blending");
+REXCVAR_DEFINE_UINT64(svr_native_trace_ps, 0, "SVR2011",
+                      "Native renderer debugging: in traced frames, dump the constants of draws "
+                      "using this pixel shader hash");
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -481,6 +487,24 @@ struct State {
 
   std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash, PipelineKeyEqual> pipelines;
   uint32_t stream_strides[kMaxStreams] = {};
+  // Resolve destinations: frame of the last resolve and the start of the
+  // current run of consecutive frames.
+  struct ResolveRun {
+    uint64_t last_frame = 0;
+    uint64_t run_start = 0;
+  };
+  std::unordered_map<uint32_t, ResolveRun> resolve_runs;
+  struct PendingReadback {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    textures::FetchConstant fetch;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t bytes_per_pixel = 0;
+    uint64_t frame = 0;
+  };
+  std::vector<PendingReadback> pending_readbacks;
+  uint64_t readbacks_delivered = 0;
   std::vector<RenderTarget*> render_target_order;
   std::vector<uint32_t> index_scratch;
   Stats stats;
@@ -589,10 +613,84 @@ bool CreateFrameSlot(FrameSlot& slot) {
   return dfn.vkCreateFence(device, &fence_info, nullptr, &slot.fence) == VK_SUCCESS;
 }
 
+// Writes resolve copies whose frame the GPU has finished into guest memory,
+// in submission order, so the game's CPU code sees render-to-texture results
+// (created attire bakes read them back). Never waits.
+void DeliverReadbacks() {
+  const VulkanDevice::Functions& dfn = *g_vk.dfn;
+  size_t delivered = 0;
+  for (const State::PendingReadback& p : g.pending_readbacks) {
+    // A slot's fence is only reset when the slot records again, three frames
+    // on, so until then its status is that of frame p.frame.
+    const bool done =
+        g.frame >= p.frame + kFramesInFlight ||
+        dfn.vkGetFenceStatus(g_vk.vk_device, g.slots[p.frame % kFramesInFlight].fence) ==
+            VK_SUCCESS;
+    if (!done) {
+      break;
+    }
+    void* mapped = nullptr;
+    if (dfn.vkMapMemory(g_vk.vk_device, p.memory, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS) {
+      VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+      range.memory = p.memory;
+      range.size = VK_WHOLE_SIZE;
+      dfn.vkInvalidateMappedMemoryRanges(g_vk.vk_device, 1, &range);
+      textures::WriteToGuest(p.fetch, static_cast<const uint8_t*>(mapped), p.width, p.height);
+      dfn.vkUnmapMemory(g_vk.vk_device, p.memory);
+    }
+    dfn.vkDestroyBuffer(g_vk.vk_device, p.buffer, nullptr);
+    dfn.vkFreeMemory(g_vk.vk_device, p.memory, nullptr);
+    ++delivered;
+  }
+  g.pending_readbacks.erase(g.pending_readbacks.begin(),
+                            g.pending_readbacks.begin() + delivered);
+  g.readbacks_delivered += delivered;
+}
+
+// Copies the first resolve in a run of consecutive frames to a readback
+// buffer (burst readback): one-off render-to-texture results reach guest
+// memory, per-frame targets cost nothing after their first frame.
+void QueueReadback(const textures::FetchConstant& fetch, const textures::ResolveTarget& target,
+                   VkImageLayout& layout) {
+  const uint32_t address = fetch.dwords[1] & 0xFFFFF000;
+  State::ResolveRun& run = g.resolve_runs[address];
+  if (run.last_frame + 1 < g.frame || run.last_frame == 0) {
+    run.run_start = g.frame;
+  }
+  run.last_frame = g.frame;
+  const uint32_t bytes_per_pixel = textures::GuestBytesPerPixel(fetch);
+  if (run.run_start != g.frame || !bytes_per_pixel) {
+    return;
+  }
+  State::PendingReadback pending;
+  pending.fetch = fetch;
+  pending.width = target.width;
+  pending.height = target.height;
+  pending.bytes_per_pixel = bytes_per_pixel;
+  pending.frame = g.frame;
+  if (!vk_util::CreateDedicatedAllocationBuffer(
+          g.device, VkDeviceSize(target.width) * target.height * bytes_per_pixel,
+          VK_BUFFER_USAGE_TRANSFER_DST_BIT, vk_util::MemoryPurpose::kReadback, pending.buffer,
+          pending.memory)) {
+    return;
+  }
+  const VkCommandBuffer cb = g.slot->main_cb;
+  ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  VkBufferImageCopy region = {};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {target.width, target.height, 1};
+  g_vk.dfn->vkCmdCopyImageToBuffer(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   pending.buffer, 1, &region);
+  g.pending_readbacks.push_back(pending);
+}
+
 void BeginFrameIfNeeded() {
   if (g.recording) {
     return;
   }
+  DeliverReadbacks();
   const VulkanDevice::Functions& dfn = *g_vk.dfn;
   const uint32_t slot_index = uint32_t(g.frame % kFramesInFlight);
   FrameSlot& slot = g.slots[slot_index];
@@ -950,7 +1048,8 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstan
   std::memset(shared, 0, sizeof(*shared));
   for (uint32_t slot = 0; slot < kFetchSlots; ++slot) {
     const uint8_t* fetch_data = d3d + kDeviceFetchConstants + slot * 24;
-    if ((LoadBE32(fetch_data) & 3) != 2) {
+    if ((LoadBE32(fetch_data) & 3) != 2 ||
+        (REXCVAR_GET(svr_native_debug_null_slots) & (1u << slot))) {
       continue;
     }
     TRACE("  slot {} fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", slot, LoadBE32(fetch_data),
@@ -1059,7 +1158,7 @@ void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t
   g_vk.dfn->vkCmdClearAttachments(g.slot->main_cb, count, attachments, 1, &clear_rect);
 }
 
-void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination) {
+void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t destination) {
   if (!g.device) {
     return;
   }
@@ -1069,7 +1168,11 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination) {
   const uint32_t dest_info = ReadReg(d3d, RB_COPY_DEST_INFO);
   const uint32_t source_select = copy_control & 7;
   const uint32_t copy_command = (copy_control >> 20) & 3;
-  RenderTarget* source = source_select < 4 ? CurrentColorTarget(d3d, false) : nullptr;
+  // Resolve flags 0..3 pick a colour target, 4 the depth-stencil surface
+  // (copied into a 24_8 texture; not implemented yet).
+  const bool depth_resolve = (flags & 7) == 4;
+  RenderTarget* source =
+      source_select < 4 && !depth_resolve ? CurrentColorTarget(d3d, false) : nullptr;
   static uint32_t logged = 0;
   if (logged++ < 8) {
     REXLOG_INFO("native renderer: resolve dest={:08X} copy_control={:08X} dest_info={:08X} "
@@ -1090,9 +1193,10 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination) {
   EndRendering();
   const VkCommandBuffer cb = g.slot->main_cb;
   if (destination && source && copy_command != 3) {
-    const textures::ResolveTarget target = textures::GetResolveTarget(
-        textures::LoadFetchConstant(base + destination + kTextureFetchConstant),
-        (dest_info >> 24) & 1);
+    const textures::FetchConstant fetch =
+        textures::LoadFetchConstant(base + destination + kTextureFetchConstant);
+    const textures::ResolveTarget target =
+        textures::GetResolveTarget(fetch, (dest_info >> 24) & 1);
     if (target.image) {
       TransitionTarget(*source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
       ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT, *target.layout,
@@ -1106,8 +1210,9 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination) {
       blit.dstOffsets[1] = {width, height, 1};
       g_vk.vkCmdBlitImage(cb, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target.image,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
-      ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VkImageLayout layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      QueueReadback(fetch, target, layout);
+      ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
       *target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
@@ -1438,8 +1543,24 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
           ReadRegFloat(d3d, PA_CL_VPORT_XOFFSET), ReadRegFloat(d3d, PA_CL_VPORT_YSCALE),
           ReadRegFloat(d3d, PA_CL_VPORT_YOFFSET), ReadRegFloat(d3d, PA_CL_VPORT_ZSCALE),
           ReadRegFloat(d3d, PA_CL_VPORT_ZOFFSET), ReadReg(d3d, PA_SU_SC_MODE_CNTL), c);
-    TRACE("  vs {:08X} ps {:08X} first vertex {} verts {} streams {:X} fetch0 {:08X}",
-          LoadBE32(d3d + kDeviceVertexShader), LoadBE32(d3d + kDevicePixelShader), first_vertex,
+    if (shader_library::Hash(LoadBE32(d3d + kDevicePixelShader)) == REXCVAR_GET(svr_native_trace_ps)) {
+      for (uint32_t r = 0; r < 256; r += 4) {
+        std::string c;
+        for (uint32_t i = 0; i < 16; ++i) {
+          c += fmt::format(" {:.4g}", LoadBEFloat(d3d + kDevicePixelConstants + r * 16 + i * 4));
+        }
+        TRACE("  ps c{}:{}", r, c);
+      }
+      std::string b;
+      for (uint32_t i = 0; i < 8; ++i) {
+        b += fmt::format(" {:08X}", LoadBE32(d3d + kDeviceBooleans + i * 4));
+      }
+      TRACE("  booleans:{} colorcontrol {:08X} colormask {:08X}", b, ReadReg(d3d, RB_COLORCONTROL),
+            ReadReg(d3d, RB_COLOR_MASK));
+    }
+    TRACE("  vs {:016x} ps {:016x} first vertex {} verts {} streams {:X} fetch0 {:08X}",
+          shader_library::Hash(LoadBE32(d3d + kDeviceVertexShader)),
+          shader_library::Hash(LoadBE32(d3d + kDevicePixelShader)), first_vertex,
           vertex_count, layout->stream_mask, LoadBE32(d3d + kDeviceStreamFetch));
   }
 }
@@ -1458,10 +1579,10 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
     const Stats& s = g.stats;
     REXLOG_INFO("native renderer: frame {}: drawn={} no_shader={} no_declaration={} "
                 "unsupported_primitive={} drawn_indexed={} bad_stream={} other={} clears={} resolves={} "
-                "pipelines={} render_targets={}",
+                "pipelines={} render_targets={} readbacks={}",
                 g.frame, s.drawn, s.no_shader, s.no_declaration, s.unsupported_primitive,
                 s.drawn_indexed, s.bad_stream, s.other, s.clears, s.resolves, g.pipelines.size(),
-                g.render_targets.size());
+                g.render_targets.size(), g.readbacks_delivered);
     g.stats = {};
   }
 

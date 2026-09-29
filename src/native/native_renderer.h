@@ -35,8 +35,9 @@ void OnSetRenderTarget(const uint8_t* base, uint32_t index, uint32_t surface);
 void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t rect[4],
              uint32_t color, float depth, uint32_t stencil);
 
-// D3DDevice_Resolve: destination texture object (0 for a clear-only resolve).
-void OnResolve(const uint8_t* base, uint32_t device, uint32_t destination);
+// D3DDevice_Resolve: flags (0..3 colour target, 4 depth-stencil) and the
+// destination texture object (0 for a clear-only resolve).
+void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t destination);
 
 // Quad and strip draws from BeginVertices / EndVertices: the vertices the
 // game copied to guest address vertices.

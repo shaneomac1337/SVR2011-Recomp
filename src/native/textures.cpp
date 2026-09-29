@@ -1,5 +1,6 @@
 #include "native/textures.h"
 
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -8,6 +9,8 @@
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
+#include <fmt/format.h>
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -15,9 +18,49 @@
 
 #include "native/vk_context.h"
 
+REXCVAR_DEFINE_UINT32(svr_native_dump_texture, 0, "SVR2011",
+                      "Native renderer debugging: write the texture at this physical address "
+                      "to native_texture_<address>.dds when it is uploaded");
+
 namespace svr::native::textures {
 
 namespace {
+
+// Writes decoded (host-order) blocks as a DDS for inspection; DXT1/3/5 and
+// RGBA8 only.
+void DumpDds(uint32_t address, VkFormat format, uint32_t width, uint32_t height,
+             const uint8_t* data, size_t size) {
+  uint32_t header[32] = {};
+  header[0] = 0x20534444;  // "DDS "
+  header[1] = 124;
+  header[2] = 0x1 | 0x2 | 0x4 | 0x1000;
+  header[3] = height;
+  header[4] = width;
+  header[20] = 32;
+  switch (format) {
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: header[21] = 0x4; header[22] = 0x31545844; break;
+    case VK_FORMAT_BC2_UNORM_BLOCK: header[21] = 0x4; header[22] = 0x33545844; break;
+    case VK_FORMAT_BC3_UNORM_BLOCK: header[21] = 0x4; header[22] = 0x35545844; break;
+    case VK_FORMAT_R8G8B8A8_UNORM:
+      header[21] = 0x41;
+      header[23] = 32;
+      header[24] = 0xFF;
+      header[25] = 0xFF00;
+      header[26] = 0xFF0000;
+      header[27] = 0xFF000000;
+      break;
+    default:
+      return;
+  }
+  header[28] = 0x1000;
+  const std::string path = fmt::format("native_texture_{:08X}.dds", address);
+  if (FILE* file = std::fopen(path.c_str(), "wb")) {
+    std::fwrite(header, 1, sizeof(header), file);
+    std::fwrite(data, 1, size, file);
+    std::fclose(file);
+    REXLOG_INFO("native renderer: dumped texture to {}", path);
+  }
+}
 
 namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
@@ -328,6 +371,11 @@ bool UploadTexture(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
     }
   }
   EndianSwap(upload.data, size_t(row_bytes) * blocks_y, fetch.endianness);
+  if (const uint32_t dump = REXCVAR_GET(svr_native_dump_texture);
+      dump && dump == ToPhysical(uint32_t(fetch.base_address) << 12)) {
+    DumpDds(dump, info.format, texture.width, texture.height, upload.data,
+            size_t(row_bytes) * blocks_y);
+  }
 
   Barrier(cb, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
@@ -475,6 +523,43 @@ ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) 
     slot->views.clear();
   }
   return {slot->image, slot->format, slot->width, slot->height, &slot->layout};
+}
+
+uint32_t GuestBytesPerPixel(const FetchConstant& raw) {
+  const FormatInfo info = GetFormatInfo(Decode(raw).format);
+  return info.format != VK_FORMAT_UNDEFINED && info.block_size == 1
+             ? 1u << info.bytes_per_block_log2
+             : 0;
+}
+
+void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t width,
+                  uint32_t height) {
+  const xenos::xe_gpu_texture_fetch_t fetch = Decode(raw);
+  const FormatInfo info = GetFormatInfo(fetch.format);
+  if (info.format == VK_FORMAT_UNDEFINED || info.block_size != 1) {
+    return;
+  }
+  const uint32_t bpp = 1u << info.bytes_per_block_log2;
+  const uint32_t pitch = uint32_t(fetch.pitch) << 5;
+  const uint32_t linear_row_bytes =
+      (pitch * bpp + xenos::kTextureLinearRowAlignmentBytes - 1) &
+      ~(xenos::kTextureLinearRowAlignmentBytes - 1);
+  auto* dest = const_cast<uint8_t*>(TranslatePhysical(ToPhysical(uint32_t(fetch.base_address) << 12)));
+  std::vector<uint8_t> row(size_t(width) * bpp);
+  for (uint32_t y = 0; y < height; ++y) {
+    std::memcpy(row.data(), pixels + size_t(y) * width * bpp, row.size());
+    // The same swap converts host order to guest order and back.
+    EndianSwap(row.data(), row.size(), fetch.endianness);
+    if (fetch.tiled) {
+      for (uint32_t x = 0; x < width; ++x) {
+        const int32_t offset =
+            texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), pitch, info.bytes_per_block_log2);
+        std::memcpy(dest + offset, row.data() + size_t(x) * bpp, bpp);
+      }
+    } else {
+      std::memcpy(dest + size_t(y) * linear_row_bytes, row.data(), row.size());
+    }
+  }
 }
 
 ResolveTarget FindResolveTarget(uint32_t base_address) {

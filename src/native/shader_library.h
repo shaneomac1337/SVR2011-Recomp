@@ -32,6 +32,9 @@ void OnShaderCreated(const uint8_t* container, uint32_t guest_object, bool is_pi
 // use; nullptr if the object is unknown or its hash is not in the cache.
 const NativeShader* Find(uint32_t guest_object);
 
+// The container hash of a guest shader object (0 if unknown), for debugging.
+uint64_t Hash(uint32_t guest_object);
+
 }  // namespace shader_library
 
 }  // namespace svr::native

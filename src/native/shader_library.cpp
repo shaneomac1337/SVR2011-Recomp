@@ -112,4 +112,10 @@ const NativeShader* Find(uint32_t guest_object) {
   return &shader;
 }
 
+uint64_t Hash(uint32_t guest_object) {
+  std::lock_guard lock(g.mutex);
+  const auto it = g.hash_by_object.find(guest_object);
+  return it != g.hash_by_object.end() ? it->second : 0;
+}
+
 }  // namespace svr::native::shader_library

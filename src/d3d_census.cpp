@@ -276,9 +276,36 @@ REX_HOOK_RAW(sub_82918A88) {
   static uint32_t probe_calls = 0;
   Probe("Resolve", ctx, base, probe_calls);
   const uint32_t device = ctx.r3.u32;
+  const uint32_t flags = ctx.r4.u32;
   const uint32_t destination = ctx.r8.u32;
+  if (REXCVAR_GET(svr_d3d_census)) {
+    // Distinct argument sets, with the 16 bytes behind each pointer argument.
+    static std::mutex mutex;
+    static std::unordered_set<uint64_t> seen;
+    const uint32_t args[] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
+                             ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
+    std::string text;
+    uint64_t hash = 14695981039346656037ull;
+    for (uint32_t i = 0; i < 7; ++i) {
+      text += fmt::format(" r{}={:08X}", i + 4, args[i]);
+      if (args[i] >= 0x40000000 && args[i] < 0xC0000000 && i != 4) {
+        text += " [";
+        for (uint32_t j = 0; j < 16; j += 4) {
+          const uint32_t v = LoadBE32(base + args[i] + j);
+          text += fmt::format(" {:08X}", v);
+          hash = (hash ^ v) * 1099511628211ull;
+        }
+        text += " ]";
+      }
+      hash = (hash ^ args[i]) * 1099511628211ull;
+    }
+    std::lock_guard lock(mutex);
+    if (seen.size() < 200 && seen.insert(hash).second) {
+      REXLOG_INFO("resolve-args{} f1={}", text, ctx.f1.f64);
+    }
+  }
   __imp__sub_82918A88(ctx, base);
-  svr::native::OnResolve(base, device, destination);
+  svr::native::OnResolve(base, device, flags, destination);
 }
 
 DECLARE_REX_FUNC(sub_8291E618);

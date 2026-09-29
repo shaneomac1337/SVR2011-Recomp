@@ -43,4 +43,13 @@ ResolveTarget GetResolveTarget(const FetchConstant& fetch, bool red_blue_swapped
 // The resolve target at a guest physical address, or an empty result.
 ResolveTarget FindResolveTarget(uint32_t base_address);
 
+// Bytes per pixel of a resolve destination's guest format, or 0 when its
+// guest layout is not written back (compressed or unknown formats).
+uint32_t GuestBytesPerPixel(const FetchConstant& fetch);
+
+// Writes resolved pixels (host order, tightly packed rows) into guest
+// memory in the destination's layout: tiled or linear, endian-swapped.
+void WriteToGuest(const FetchConstant& fetch, const uint8_t* pixels, uint32_t width,
+                  uint32_t height);
+
 }  // namespace svr::native::textures
