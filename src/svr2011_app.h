@@ -30,6 +30,8 @@ class Svr2011App : public rex::ReXApp {
     svr::native::Configure(runtime());
   }
 
+  void OnShutdown() override { svr::native::Shutdown(); }
+
   void OnPreLaunchModule() override {
     // Hide the cursor over the game once the mouse has been still for a second.
     if (auto* game_window = window()) {

@@ -512,11 +512,12 @@ void BeginFrameIfNeeded() {
   if (g.recording) {
     return;
   }
-  DeliverReadbacks();
   const VulkanDevice::Functions& dfn = *g_vk.dfn;
   const uint32_t slot_index = uint32_t(g.frame % kFramesInFlight);
   FrameSlot& slot = g.slots[slot_index];
   dfn.vkWaitForFences(g_vk.vk_device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+  // After the wait: readbacks of the slot's previous frame are complete.
+  DeliverReadbacks();
   dfn.vkResetFences(g_vk.vk_device, 1, &slot.fence);
   // The slot's previous frame, and every frame before it, has completed.
   g_vk.frame = g.frame;
@@ -857,6 +858,12 @@ void Configure(rex::Runtime* runtime) {
 }
 
 bool IsEnabled() { return g.device != nullptr; }
+
+void Shutdown() {
+  if (g.device) {
+    pipelines::Shutdown();
+  }
+}
 
 void OnSetRenderTarget(const uint8_t* base, uint32_t index, uint32_t surface) {
   if (!g.device || index >= 4 || !surface) {

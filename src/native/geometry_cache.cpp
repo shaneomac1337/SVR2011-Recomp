@@ -31,6 +31,7 @@ constexpr uint64_t kPruneAfterFrames = 1800;
 struct Entry {
   VkDeviceSize offset = 0;
   uint32_t generation = UINT32_MAX;  // the arena it lives in
+  uint32_t watch_token = 0;
   uint64_t uploaded_frame = UINT64_MAX;
   uint64_t last_used = 0;
   uint64_t dynamic_until = 0;
@@ -104,7 +105,7 @@ uint8_t* Place(Entry& entry, uint32_t physical, uint32_t guest_bytes, VkDeviceSi
   entry.last_used = frame;
   const bool enabled = REXCVAR_GET(svr_native_geometry_cache) && g.arena;
   if (enabled && entry.generation == g.generation &&
-      !write_watch::IsDirty(physical, guest_bytes)) {
+      !write_watch::IsDirty(physical, guest_bytes, entry.watch_token)) {
     out = {g.arena, entry.offset};
     return nullptr;
   }
@@ -123,7 +124,7 @@ uint8_t* Place(Entry& entry, uint32_t physical, uint32_t guest_bytes, VkDeviceSi
     out = {upload.buffer, upload.offset};
     return upload.data;
   }
-  write_watch::Watch(physical, guest_bytes);
+  const uint32_t watch_token = write_watch::Watch(physical, guest_bytes);
   const Upload staging = AllocateUpload(host_bytes, 16);
   VkDeviceSize offset;
   if (!staging.data || !AllocateArena(host_bytes, offset)) {
@@ -135,6 +136,7 @@ uint8_t* Place(Entry& entry, uint32_t physical, uint32_t guest_bytes, VkDeviceSi
   g_vk.dfn->vkCmdCopyBuffer(upload_cb, staging.buffer, g.arena, 1, &copy);
   g.copied = true;
   entry.offset = offset;
+  entry.watch_token = watch_token;
   entry.generation = g.generation;
   entry.uploaded_frame = frame;
   out = {g.arena, offset};
@@ -176,6 +178,9 @@ bool IndexBuffer(uint32_t physical_address, uint32_t count, bool index32, bool q
                        (index32 ? 2 : 0) | (quads ? 1 : 0);
   Entry& entry = g.indices[key];
   const uint32_t draw_count = quads ? count / 4 * 6 : count;
+  if (!draw_count) {
+    return false;
+  }
   bool failed;
   uint8_t* data = Place(entry, physical_address, count * (index32 ? 4 : 2),
                         VkDeviceSize(draw_count) * 4, upload_cb, out.region, failed);

@@ -140,6 +140,9 @@ struct Texture {
   // Guest memory the upload read: base level and mips (physical, bytes).
   uint32_t base_range[2] = {};
   uint32_t mips_range[2] = {};
+  uint32_t watch_token = 0;
+  // The last check could not upload: check again next frame.
+  bool upload_failed = false;
   uint64_t checked_frame = UINT64_MAX;
   uint64_t last_used = 0;
   // Written in consecutive frames: not watched (hashed every frame) until
@@ -411,10 +414,11 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
   texture.base_range[1] = base ? layout.base.level_data_extent_bytes : 0;
   texture.mips_range[0] = t.mip_page << 12;
   texture.mips_range[1] = mips && t.max_level ? layout.mips_total_extent_bytes : 0;
+  uint32_t watch_token = 0;
   if (watch) {
     // Before reading: a write after this makes the texture dirty again.
-    write_watch::Watch(texture.base_range[0], texture.base_range[1]);
-    write_watch::Watch(texture.mips_range[0], texture.mips_range[1]);
+    watch_token = std::min(write_watch::Watch(texture.base_range[0], texture.base_range[1]),
+                           write_watch::Watch(texture.mips_range[0], texture.mips_range[1]));
   }
   uint64_t hash = 0;
   if (base) {
@@ -423,6 +427,8 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
   if (mips && t.max_level) {
     hash ^= XXH3_64bits(mips, layout.mips_total_extent_bytes) * 31;
   }
+  texture.watch_token = watch_token;
+  texture.upload_failed = false;
   if (texture.uploaded && hash == texture.content_hash) {
     return false;
   }
@@ -436,6 +442,7 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
   }
   const Upload upload = AllocateUpload(total, 16);
   if (!upload.data) {
+    texture.upload_failed = true;
     return false;
   }
   texture.content_hash = hash;
@@ -635,11 +642,13 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
     const bool watch =
         REXCVAR_GET(svr_native_texture_write_watch) && frame >= texture.dynamic_until;
     const bool clean =
-        watch && texture.uploaded &&
+        watch && texture.uploaded && !texture.upload_failed &&
         (!texture.base_range[1] ||
-         !write_watch::IsDirty(texture.base_range[0], texture.base_range[1])) &&
+         !write_watch::IsDirty(texture.base_range[0], texture.base_range[1],
+                               texture.watch_token)) &&
         (!texture.mips_range[1] ||
-         !write_watch::IsDirty(texture.mips_range[0], texture.mips_range[1]));
+         !write_watch::IsDirty(texture.mips_range[0], texture.mips_range[1],
+                               texture.watch_token));
     if (!clean) {
       if (watch && texture.uploaded) {
         texture.dirty_streak = texture.dirty_frame + 1 == frame ? texture.dirty_streak + 1 : 1;
@@ -733,7 +742,13 @@ void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t widt
   const uint32_t bpp = 1u << info.bytes_per_block_log2;
   const uint32_t pitch = uint32_t(fetch.pitch) << 5;
   const uint32_t linear_row_bytes = texture_layout::LinearRowBytes(pitch, info.bytes_per_block_log2);
-  auto* dest = const_cast<uint8_t*>(TranslatePhysical(ToPhysical(uint32_t(fetch.base_address) << 12)));
+  const uint32_t physical = ToPhysical(uint32_t(fetch.base_address) << 12);
+  auto* dest = const_cast<uint8_t*>(TranslatePhysical(physical));
+  // These writes bypass the guest's page protection; cached copies of the
+  // pages must still see them.
+  // Tiled levels span whole 32x32 tiles; pitch is a multiple of 32.
+  write_watch::MarkWritten(physical, fetch.tiled ? ((height + 31) & ~31u) * pitch * bpp
+                                                 : linear_row_bytes * height);
   std::vector<uint8_t> row(size_t(width) * bpp);
   for (uint32_t y = 0; y < height; ++y) {
     std::memcpy(row.data(), pixels + size_t(y) * width * bpp, row.size());

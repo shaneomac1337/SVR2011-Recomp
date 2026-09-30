@@ -22,6 +22,10 @@ void Configure(rex::Runtime* runtime);
 
 bool IsEnabled();
 
+// Stops background work and saves the pipeline cache; call while the Vulkan
+// device still exists.
+void Shutdown();
+
 // base is guest memory, device the guest D3DDevice.
 
 // D3DDevice_Present: front_buffer is the texture object shown.

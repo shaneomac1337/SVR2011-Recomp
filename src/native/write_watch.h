@@ -1,7 +1,13 @@
 // Which guest physical pages changed since the native renderer last read
 // them: pages it caches (textures, vertices, indices) are write-protected
 // through the SDK's physical memory access callbacks, as the emulator's
-// shared memory does, and a write clears their "clean" bit.
+// shared memory does, and each write stamps its pages with a new epoch. A
+// cache entry keeps the epoch from when it watched its range, so entries
+// sharing pages never hide each other's writes.
+//
+// Pages the guest has made read-only are not protected by the SDK and so
+// never report writes (as in the emulator); the svr_native_*_cache switches
+// turn the caches off if a game relies on reprotecting its data.
 
 #pragma once
 
@@ -16,29 +22,31 @@ namespace svr::native::write_watch {
 // Registers the invalidation callback. Without it every range reads dirty.
 bool Initialize(rex::memory::Memory* memory);
 
-// Marks [address, address + length) clean and write-protects it. Read the
-// data after this call: a write that lands before the read is in the data,
-// one after it makes the range dirty again.
-void Watch(uint32_t physical_address, uint32_t length);
+// Write-protects [address, address + length) and returns the token IsDirty
+// compares against. Read the data after this call: a write that lands before
+// the read is in the data, one after it makes the range dirty.
+uint32_t Watch(uint32_t physical_address, uint32_t length);
 
-// True if any page of the range was written, or never watched, since Watch.
-bool IsDirty(uint32_t physical_address, uint32_t length);
+// True if a page of the range was written after the Watch that returned token.
+bool IsDirty(uint32_t physical_address, uint32_t length, uint32_t token);
 
-// The pure page bitmap behind both, for tests: pages are 4 KB, bits set = clean.
-class PageBitmap {
+// Host writes into guest memory (resolve readbacks) go around the page
+// protection; this marks their pages written.
+void MarkWritten(uint32_t physical_address, uint32_t length);
+
+// The pure page stamps behind these, for tests: the epoch of each 4 KB
+// page's last write (0 = none seen).
+class PageStamps {
  public:
   static constexpr uint32_t kPageShift = 12;
   static constexpr uint32_t kPages = 0x20000000u >> kPageShift;  // 512 MB
 
-  void MarkClean(uint32_t address, uint32_t length);
-  void MarkDirty(uint32_t address, uint32_t length);
-  bool AllClean(uint32_t address, uint32_t length) const;
+  // Written by guest threads (Stamp) and the render thread.
+  void Stamp(uint32_t address, uint32_t length, uint32_t epoch);
+  bool WrittenAfter(uint32_t address, uint32_t length, uint32_t token) const;
 
  private:
-  template <typename F>
-  static void ForBlocks(uint32_t address, uint32_t length, F&& f);
-  // Written by guest threads (MarkDirty) and the render thread.
-  alignas(64) uint64_t bits_[kPages / 64] = {};
+  uint32_t stamps_[kPages] = {};
 };
 
 }  // namespace svr::native::write_watch

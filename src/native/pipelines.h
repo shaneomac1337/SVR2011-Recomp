@@ -61,6 +61,9 @@ size_t Count();
 // the last save.
 void Save();
 
+// Stops the prebuild thread (before the device goes away) and saves.
+void Shutdown();
+
 }  // namespace pipelines
 
 }  // namespace svr::native

@@ -9,62 +9,61 @@
 
 namespace svr::native::write_watch {
 
-template <typename F>
-void PageBitmap::ForBlocks(uint32_t address, uint32_t length, F&& f) {
-  if (!length || address >= 0x20000000u) {
-    return;
-  }
-  const uint64_t end = std::min<uint64_t>(uint64_t(address) + length, 0x20000000u);
-  const uint32_t first = address >> kPageShift;
-  const uint32_t last = uint32_t((end - 1) >> kPageShift);
-  for (uint32_t block = first >> 6; block <= last >> 6; ++block) {
-    uint64_t mask = ~0ull;
-    if (block == first >> 6) {
-      mask &= ~0ull << (first & 63);
-    }
-    if (block == last >> 6) {
-      mask &= ~0ull >> (63 - (last & 63));
-    }
-    f(block, mask);
-  }
-}
+namespace {
 
-void PageBitmap::MarkClean(uint32_t address, uint32_t length) {
-  ForBlocks(address, length, [this](uint32_t block, uint64_t mask) {
-    std::atomic_ref<uint64_t>(bits_[block]).fetch_or(mask, std::memory_order_relaxed);
-  });
-}
-
-void PageBitmap::MarkDirty(uint32_t address, uint32_t length) {
-  ForBlocks(address, length, [this](uint32_t block, uint64_t mask) {
-    std::atomic_ref<uint64_t>(bits_[block]).fetch_and(~mask, std::memory_order_relaxed);
-  });
-}
-
-bool PageBitmap::AllClean(uint32_t address, uint32_t length) const {
+// Pages of [address, address + length) within physical memory; false if none.
+bool PageRange(uint32_t address, uint32_t length, uint32_t& first, uint32_t& last) {
   if (!length || address >= 0x20000000u) {
     return false;
   }
-  bool clean = true;
-  ForBlocks(address, length, [this, &clean](uint32_t block, uint64_t mask) {
-    const uint64_t bits = std::atomic_ref<uint64_t>(const_cast<uint64_t&>(bits_[block]))
-                              .load(std::memory_order_acquire);
-    clean = clean && (bits & mask) == mask;
-  });
-  return clean;
+  const uint64_t end = std::min<uint64_t>(uint64_t(address) + length, 0x20000000u);
+  first = address >> PageStamps::kPageShift;
+  last = uint32_t((end - 1) >> PageStamps::kPageShift);
+  return true;
+}
+
+}  // namespace
+
+void PageStamps::Stamp(uint32_t address, uint32_t length, uint32_t epoch) {
+  uint32_t first, last;
+  if (!PageRange(address, length, first, last)) {
+    return;
+  }
+  for (uint32_t page = first; page <= last; ++page) {
+    std::atomic_ref<uint32_t> stamp(stamps_[page]);
+    uint32_t current = stamp.load(std::memory_order_relaxed);
+    while (current < epoch &&
+           !stamp.compare_exchange_weak(current, epoch, std::memory_order_release)) {
+    }
+  }
+}
+
+bool PageStamps::WrittenAfter(uint32_t address, uint32_t length, uint32_t token) const {
+  uint32_t first, last;
+  if (!PageRange(address, length, first, last)) {
+    return true;
+  }
+  for (uint32_t page = first; page <= last; ++page) {
+    if (std::atomic_ref<uint32_t>(const_cast<uint32_t&>(stamps_[page]))
+            .load(std::memory_order_acquire) > token) {
+      return true;
+    }
+  }
+  return false;
 }
 
 namespace {
 
 rex::memory::Memory* g_memory = nullptr;
-std::unique_ptr<PageBitmap> g_pages;
+std::unique_ptr<PageStamps> g_pages;
+std::atomic<uint32_t> g_epoch{0};
 
-// Guest threads, under the global critical region: the written range becomes
-// dirty. Returning exactly that range keeps the other watchers' pages around
-// it protected.
+// Guest threads, under the global critical region: the written range gets a
+// new epoch. Returning exactly that range keeps the other watchers' pages
+// around it protected.
 std::pair<uint32_t, uint32_t> OnInvalidate(void*, uint32_t physical_address_start,
                                            uint32_t length, bool) {
-  g_pages->MarkDirty(physical_address_start, length);
+  g_pages->Stamp(physical_address_start, length, g_epoch.fetch_add(1) + 1);
   return {physical_address_start, length};
 }
 
@@ -74,22 +73,30 @@ bool Initialize(rex::memory::Memory* memory) {
   if (g_memory) {
     return true;
   }
-  g_pages = std::make_unique<PageBitmap>();
+  g_pages = std::make_unique<PageStamps>();
   g_memory = memory;
   memory->RegisterPhysicalMemoryInvalidationCallback(OnInvalidate, nullptr);
   return true;
 }
 
-void Watch(uint32_t physical_address, uint32_t length) {
+uint32_t Watch(uint32_t physical_address, uint32_t length) {
   if (!g_memory || !length) {
-    return;
+    return 0;
   }
-  g_pages->MarkClean(physical_address, length);
+  // Writes stamped up to now are in the data read after this call.
+  const uint32_t token = g_epoch.load(std::memory_order_acquire);
   g_memory->EnablePhysicalMemoryAccessCallbacks(physical_address, length, true, false);
+  return token;
 }
 
-bool IsDirty(uint32_t physical_address, uint32_t length) {
-  return !g_memory || !g_pages->AllClean(physical_address, length);
+bool IsDirty(uint32_t physical_address, uint32_t length, uint32_t token) {
+  return !g_memory || g_pages->WrittenAfter(physical_address, length, token);
+}
+
+void MarkWritten(uint32_t physical_address, uint32_t length) {
+  if (g_memory) {
+    g_pages->Stamp(physical_address, length, g_epoch.fetch_add(1) + 1);
+  }
 }
 
 }  // namespace svr::native::write_watch

@@ -58,6 +58,7 @@ constexpr uint32_t kVersion = 1;
 
 struct State {
   std::mutex mutex;
+  std::mutex save_mutex;  // the render thread and shutdown both save
   std::unordered_map<PipelineKey, VkPipeline, KeyHash, KeyEqual> pipelines;
   std::vector<PipelineKey> created;  // in creation order, for Save
   size_t saved = 0;
@@ -389,6 +390,7 @@ void Save() {
   if (!g.cache) {
     return;
   }
+  std::lock_guard save_lock(g.save_mutex);
   std::vector<PipelineKey> keys;
   {
     std::lock_guard lock(g.mutex);
@@ -422,6 +424,14 @@ void Save() {
                   (data.empty() || WriteFile(kCacheFile, data.data(), data.size(), nullptr, 0));
   REXLOG_INFO("native renderer: {} {} pipelines ({} KB driver cache)",
               ok ? "saved" : "could not save", keys.size(), data.size() / 1024);
+}
+
+void Shutdown() {
+  if (g.prebuild.joinable()) {
+    g.prebuild.request_stop();
+    g.prebuild.join();
+  }
+  Save();
 }
 
 }  // namespace svr::native::pipelines
