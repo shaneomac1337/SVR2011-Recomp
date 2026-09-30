@@ -557,6 +557,12 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   binding.dimension = uint32_t(fetch.dimension);
   const bool cube = fetch.dimension == xenos::DataDimension::kCube;
   if (fetch.dimension != xenos::DataDimension::k2DOrStacked && !cube) {
+    // No traced scene uses 1D or 3D textures; say so if one ever does.
+    if (g.unsupported_logged++ < 16) {
+      REXLOG_WARN("native renderer: {}D texture at {:08X} not supported yet",
+                  fetch.dimension == xenos::DataDimension::k1D ? 1 : 3,
+                  ToPhysical(uint32_t(fetch.base_address) << 12));
+    }
     binding.sampler_index = SamplerIndex(fetch);
     return binding;
   }
@@ -590,8 +596,12 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
                                                  &t.min_level, &t.max_level);
   t.width = width_minus_1 + 1;
   t.height = height_minus_1 + 1;
-  // Stacked 2D arrays use their first layer for now.
+  // Stacked 2D arrays use their first layer for now (no traced scene has one).
   t.layers = cube ? 6 : 1;
+  if (!cube && depth_minus_1 && g.unsupported_logged++ < 16) {
+    REXLOG_WARN("native renderer: stacked texture at {:08X} ({} layers) draws its first layer",
+                base_address, depth_minus_1 + 1);
+  }
   if (t.base_page) {
     t.base_page = ToPhysical(t.base_page << 12) >> 12;
   }
