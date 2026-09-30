@@ -326,10 +326,24 @@ struct State {
     std::chrono::steady_clock::time_point last_present;
     uint64_t pending = 0;
     uint32_t render_targets = 0;
+    uint64_t renderer_ns = 0;    // in the hooks below, fence waits included
+    uint64_t fence_wait_ns = 0;  // waiting for the GPU to free a frame slot
   } hitch;
 } g;
 
 int64_t g_trace_frame = -1;
+
+uint64_t NsSince(std::chrono::steady_clock::time_point start) {
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count());
+}
+
+// Adds the time a hook spends to the frame's renderer time.
+struct HookTimer {
+  std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+  ~HookTimer() { g.hitch.renderer_ns += NsSince(start); }
+};
 
 bool Tracing() {
   return int64_t(g.frame) == int64_t(REXCVAR_GET(svr_native_trace_frame)) ||
@@ -523,7 +537,9 @@ void BeginFrameIfNeeded() {
   const VulkanDevice::Functions& dfn = *g_vk.dfn;
   const uint32_t slot_index = uint32_t(g.frame % kFramesInFlight);
   FrameSlot& slot = g.slots[slot_index];
+  const auto wait_start = std::chrono::steady_clock::now();
   dfn.vkWaitForFences(g_vk.vk_device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+  g.hitch.fence_wait_ns += NsSince(wait_start);
   // After the wait: readbacks of the slot's previous frame are complete.
   DeliverReadbacks();
   dfn.vkResetFences(g_vk.vk_device, 1, &slot.fence);
@@ -778,8 +794,9 @@ bool UploadConstantBlock(State::ReusedBlock& block, const uint8_t* big_endian,
   return true;
 }
 
+// wait: textures still loading are waited for rather than drawn without.
 bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, uint32_t fetch_slots,
-                     PushConstants& push) {
+                     bool wait, PushConstants& push) {
   if (!UploadConstantBlock(g.vertex_constants, d3d + kDeviceVertexConstants,
                            push.vertex_constants) ||
       !UploadConstantBlock(g.pixel_constants, d3d + kDevicePixelConstants,
@@ -798,7 +815,7 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, uint32_t fe
           LoadBE32(fetch_data + 4), LoadBE32(fetch_data + 8), LoadBE32(fetch_data + 12),
           LoadBE32(fetch_data + 16), LoadBE32(fetch_data + 20));
     const textures::Binding binding = textures::Bind(textures::LoadFetchConstant(fetch_data),
-                                                     g.slot->upload_cb, g.frame);
+                                                     g.slot->upload_cb, g.frame, wait);
     switch (binding.dimension) {
       case 2: shared->texture_3d[slot] = binding.texture_index; break;
       case 3: shared->texture_cube[slot] = binding.texture_index; break;
@@ -871,6 +888,7 @@ bool IsEnabled() { return g.device != nullptr; }
 void Shutdown() {
   if (g.device) {
     pipelines::Shutdown();
+    textures::Shutdown();
   }
 }
 
@@ -885,6 +903,7 @@ void OnSetRenderTarget(const uint8_t* base, uint32_t index, uint32_t surface) {
 
 void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t rect[4],
              uint32_t color, float depth, uint32_t stencil) {
+  const HookTimer timer;
   if (!g.device) {
     return;
   }
@@ -1010,6 +1029,7 @@ void ResolveDepth(const uint8_t* d3d, const textures::FetchConstant& fetch) {
 }  // namespace
 
 void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t destination) {
+  const HookTimer timer;
   if (!g.device) {
     return;
   }
@@ -1195,7 +1215,7 @@ const VertexLayout* PrepareDraw(const uint8_t* base, const uint8_t* d3d,
   const uint32_t fetch_slots = REXCVAR_GET(svr_native_bind_used_slots)
                                    ? vertex_shader->fetch_slots | pixel_shader->fetch_slots
                                    : UINT32_MAX;
-  if (!UploadConstants(d3d, layout.swapped_texcoords, fetch_slots, push)) {
+  if (!UploadConstants(d3d, layout.swapped_texcoords, fetch_slots, !main_scene, push)) {
     ++g.stats.other;
     return nullptr;
   }
@@ -1247,6 +1267,7 @@ void OnSetStreamSource(uint32_t stream, uint32_t stride) {
 
 void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
                     uint32_t vertex_count, uint32_t stride, uint32_t vertices) {
+  const HookTimer timer;
   if (!g.device || !vertex_count || !vertices || !stride || stride > 256 || (stride & 3)) {
     return;
   }
@@ -1293,6 +1314,7 @@ void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
 
 void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
                    int32_t base_vertex, uint32_t start_index, uint32_t index_count) {
+  const HookTimer timer;
   if (!g.device || !index_count) {
     return;
   }
@@ -1412,25 +1434,35 @@ void LogHitch() {
   const double ms =
       std::chrono::duration<double, std::milli>(now - g.hitch.last_present).count();
   g.hitch.last_present = now;
-  uint64_t pipelines_compiled, pipeline_ns, textures, texture_bytes, texture_ns;
+  uint64_t pipelines_compiled, pipeline_ns;
   pipelines::TakeSyncStats(pipelines_compiled, pipeline_ns);
-  textures::TakeUploadStats(textures, texture_bytes, texture_ns);
+  textures::UploadStats tex;
+  textures::TakeUploadStats(tex);
   const uint64_t geometry_bytes = geometry::TakeUploadBytes();
   if (g.frame > 60 && ms > kHitchMs) {
-    REXLOG_INFO("native renderer: hitch at frame {}: {:.1f} ms; pipelines compiled on this "
-                "thread {} ({:.1f} ms), draws waiting for pipelines {}, textures {} "
-                "({:.2f} MB, {:.1f} ms), geometry {:.2f} MB, new render targets {}",
-                g.frame, ms, pipelines_compiled, pipeline_ns / 1e6, g.hitch.pending, textures,
-                texture_bytes / 1048576.0, texture_ns / 1e6, geometry_bytes / 1048576.0,
+    // renderer = time in the hooks (the rest of the frame is the game and
+    // the emulator); fence = of that, waiting for the GPU.
+    REXLOG_INFO("native renderer: hitch at frame {}: {:.1f} ms, renderer {:.1f} ms, GPU fence "
+                "{:.1f} ms; pipelines compiled on this thread {} ({:.1f} ms), draws waiting "
+                "for pipelines {}; textures uploaded {} ({:.2f} MB), render thread on textures "
+                "{:.1f} ms (waiting {:.1f}), reading on any thread {:.1f} ms (write-watch "
+                "{:.1f}, hash {:.1f}); geometry {:.2f} MB; new render targets {}",
+                g.frame, ms, g.hitch.renderer_ns / 1e6, g.hitch.fence_wait_ns / 1e6,
+                pipelines_compiled, pipeline_ns / 1e6, g.hitch.pending, tex.count,
+                tex.bytes / 1048576.0, tex.ns / 1e6, tex.wait_ns / 1e6, tex.read_ns / 1e6,
+                tex.watch_ns / 1e6, tex.hash_ns / 1e6, geometry_bytes / 1048576.0,
                 g.hitch.render_targets);
   }
   g.hitch.pending = 0;
   g.hitch.render_targets = 0;
+  g.hitch.renderer_ns = 0;
+  g.hitch.fence_wait_ns = 0;
 }
 
 }  // namespace
 
 void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
+  const HookTimer timer;
   if (!g.device) {
     return;
   }

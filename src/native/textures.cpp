@@ -1,10 +1,15 @@
 #include "native/textures.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -29,6 +34,10 @@ REXCVAR_DEFINE_INT32(svr_native_anisotropy, 3, "SVR2011",
 REXCVAR_DEFINE_BOOL(svr_native_texture_write_watch, true, "SVR2011",
                     "Native renderer: skip re-checking textures whose guest memory was not "
                     "written since the last upload (off: hash every texture every frame)");
+REXCVAR_DEFINE_BOOL(svr_native_async_textures, true, "SVR2011",
+                    "Native renderer: read and convert textures on worker threads; main-scene "
+                    "draws show the previous content (or nothing) for a frame or two instead of "
+                    "stalling while new textures load");
 REXCVAR_DEFINE_UINT32(svr_native_dump_texture, 0, "SVR2011",
                       "Native renderer debugging: write the texture at this physical address "
                       "to native_texture_<address>.dds when it is uploaded");
@@ -151,6 +160,8 @@ struct Texture {
   uint64_t dirty_frame = UINT64_MAX;
   uint32_t dirty_streak = 0;
   uint64_t dynamic_until = 0;
+  // A read of guest memory in progress on a worker (or done, to apply).
+  std::shared_ptr<struct TextureJob> job;
   bool uploaded = false;
   bool is_resolve_target = false;
   bool red_blue_swapped = false;
@@ -166,10 +177,29 @@ struct State {
   bool defaults_ready = false;
   uint32_t unsupported_logged = 0;
   uint32_t scale = 1;
+  // Render thread: textures uploaded, bytes, and its own time on textures
+  // (applying finished reads, reading inline, waiting for workers).
   uint64_t upload_count = 0;
   uint64_t upload_bytes = 0;
-  uint64_t upload_ns = 0;  // checks and uploads, hashing included
+  uint64_t upload_ns = 0;
+  uint64_t wait_ns = 0;
+  // Any thread reading guest textures.
+  std::atomic<uint64_t> read_ns{0};
+  std::atomic<uint64_t> watch_ns{0};  // of which write-protecting pages
+  std::atomic<uint64_t> hash_ns{0};   // of which hashing guest data
+  // Worker threads and their queue.
+  std::mutex mutex;
+  std::condition_variable_any work_ready;
+  std::condition_variable_any job_done;
+  std::deque<std::shared_ptr<struct TextureJob>> queue;
+  std::vector<std::jthread> workers;
 } g;
+
+uint64_t NsSince(std::chrono::steady_clock::time_point start) {
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count());
+}
 
 // Guest textures unused this many frames are destroyed (reloaded if needed).
 constexpr uint64_t kEvictAfterFrames = 1800;
@@ -402,9 +432,43 @@ struct GuestTexture {
   uint32_t max_level;
 };
 
-// Uploads every level from guest memory; false when the data is unchanged
-// since the last upload.
-bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, bool watch) {
+// One read of a guest texture: done by a worker (or inline), then applied on
+// the render thread, which records the copy into the image.
+struct TextureJob {
+  GuestTexture t;
+  bool cube = false;
+  bool create_image = false;  // the texture has no image yet
+  bool watch = false;
+  bool had_upload = false;
+  uint64_t previous_hash = 0;
+  std::atomic<bool> done{false};
+  // Results.
+  Texture image;  // image and memory when create_image
+  bool image_failed = false;
+  bool changed = false;
+  uint64_t hash = 0;
+  uint32_t watch_token = 0;
+  uint32_t base_range[2] = {};
+  uint32_t mips_range[2] = {};
+  std::vector<uint8_t> data;  // host-order levels, tightly packed
+  VkBufferImageCopy regions[16] = {};
+  uint32_t region_count = 0;
+};
+
+// Any thread: creates the image if needed, reads, hashes and converts the
+// guest data. Only touches the job.
+void ReadTexture(TextureJob& job) {
+  const auto start = std::chrono::steady_clock::now();
+  const GuestTexture& t = job.t;
+  if (job.create_image &&
+      !CreateImage(job.image, VK_IMAGE_TYPE_2D, t.info.format, t.width, t.height, 1, t.layers,
+                   job.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   t.max_level + 1)) {
+    job.image_failed = true;
+    g.read_ns += NsSince(start);
+    return;
+  }
   const xenos::xe_gpu_texture_fetch_t& fetch = t.fetch;
   const uint32_t block = t.info.block_size;
   const uint32_t bpb_log2 = t.info.bytes_per_block_log2;
@@ -414,16 +478,18 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
       fetch.format, fetch.packed_mips, t.base_page != 0, t.max_level);
   const uint8_t* base = t.base_page ? TranslatePhysical(t.base_page << 12) : nullptr;
   const uint8_t* mips = t.mip_page ? TranslatePhysical(t.mip_page << 12) : nullptr;
-  texture.base_range[0] = t.base_page << 12;
-  texture.base_range[1] = base ? layout.base.level_data_extent_bytes : 0;
-  texture.mips_range[0] = t.mip_page << 12;
-  texture.mips_range[1] = mips && t.max_level ? layout.mips_total_extent_bytes : 0;
-  uint32_t watch_token = 0;
-  if (watch) {
+  job.base_range[0] = t.base_page << 12;
+  job.base_range[1] = base ? layout.base.level_data_extent_bytes : 0;
+  job.mips_range[0] = t.mip_page << 12;
+  job.mips_range[1] = mips && t.max_level ? layout.mips_total_extent_bytes : 0;
+  if (job.watch) {
     // Before reading: a write after this makes the texture dirty again.
-    watch_token = std::min(write_watch::Watch(texture.base_range[0], texture.base_range[1]),
-                           write_watch::Watch(texture.mips_range[0], texture.mips_range[1]));
+    const auto watch_start = std::chrono::steady_clock::now();
+    job.watch_token = std::min(write_watch::Watch(job.base_range[0], job.base_range[1]),
+                               write_watch::Watch(job.mips_range[0], job.mips_range[1]));
+    g.watch_ns += NsSince(watch_start);
   }
+  const auto hash_start = std::chrono::steady_clock::now();
   uint64_t hash = 0;
   if (base) {
     hash = XXH3_64bits(base, layout.base.level_data_extent_bytes);
@@ -431,10 +497,12 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
   if (mips && t.max_level) {
     hash ^= XXH3_64bits(mips, layout.mips_total_extent_bytes) * 31;
   }
-  texture.watch_token = watch_token;
-  texture.upload_failed = false;
-  if (texture.uploaded && hash == texture.content_hash) {
-    return false;
+  g.hash_ns += NsSince(hash_start);
+  job.hash = hash;
+  job.changed = !job.had_upload || hash != job.previous_hash;
+  if (!job.changed) {
+    g.read_ns += NsSince(start);
+    return;
   }
 
   // Host copy: level by level, each layer tightly packed.
@@ -444,16 +512,7 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
     const uint32_t by = (std::max(t.height >> level, 1u) + block - 1) / block;
     total += size_t(bx) * by * bytes_per_block * t.layers;
   }
-  const Upload upload = AllocateUpload(total, 16);
-  if (!upload.data) {
-    texture.upload_failed = true;
-    return false;
-  }
-  texture.content_hash = hash;
-  texture.uploaded = true;
-
-  VkBufferImageCopy regions[16] = {};
-  uint32_t region_count = 0;
+  job.data.resize(total);
   size_t offset = 0;
   for (uint32_t level = 0; level <= t.max_level; ++level) {
     const uint32_t level_width = std::max(t.width >> level, 1u);
@@ -476,7 +535,7 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
                                        tail_z);
     }
     for (uint32_t layer = 0; layer < t.layers; ++layer) {
-      uint8_t* dest = upload.data + offset + size_t(layer) * row_bytes * by;
+      uint8_t* dest = job.data.data() + offset + size_t(layer) * row_bytes * by;
       if (!source) {
         std::memset(dest, 0, row_bytes * by);
         continue;
@@ -485,32 +544,114 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, 
           dest, source + size_t(layer) * stored.array_slice_stride_bytes, bx, by, bpb_log2,
           stored.row_pitch_bytes, fetch.tiled, tail_x, tail_y);
     }
-    VkBufferImageCopy& region = regions[region_count++];
-    region.bufferOffset = upload.offset + offset;
+    VkBufferImageCopy& region = job.regions[job.region_count++];
+    region.bufferOffset = offset;  // relative; the upload offset is added when applied
     region.bufferRowLength = bx * block;
     region.bufferImageHeight = by * block;
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, t.layers};
     region.imageExtent = {level_width, level_height, 1};
     offset += row_bytes * by * t.layers;
   }
-  EndianSwap(upload.data, total, fetch.endianness);
+  EndianSwap(job.data.data(), total, fetch.endianness);
   if (const uint32_t dump = REXCVAR_GET(svr_native_dump_texture);
       dump && dump == t.base_page << 12) {
-    DumpDds(dump, t.info.format, t.width, t.height, upload.data,
+    DumpDds(dump, t.info.format, t.width, t.height, job.data.data(),
             size_t((t.width + block - 1) / block) * ((t.height + block - 1) / block) *
                 bytes_per_block);
   }
+  g.read_ns += NsSince(start);
+}
 
+// Render thread: takes a finished read into the texture, recording the copy.
+void ApplyJob(Texture& texture, TextureJob& job, VkCommandBuffer cb) {
+  if (job.create_image) {
+    if (job.image_failed) {
+      REXLOG_ERROR("native renderer: could not create a {}x{} texture", job.t.width,
+                   job.t.height);
+      return;
+    }
+    texture.image = job.image.image;
+    texture.memory = job.image.memory;
+    texture.format = job.image.format;
+    texture.width = job.image.width;
+    texture.height = job.image.height;
+    texture.levels = job.image.levels;
+    texture.layers = job.image.layers;
+    texture.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  }
+  texture.base_range[0] = job.base_range[0];
+  texture.base_range[1] = job.base_range[1];
+  texture.mips_range[0] = job.mips_range[0];
+  texture.mips_range[1] = job.mips_range[1];
+  texture.watch_token = job.watch_token;
+  texture.upload_failed = false;
+  if (!job.changed) {
+    return;
+  }
+  const Upload upload = AllocateUpload(job.data.size(), 16);
+  if (!upload.data) {
+    texture.upload_failed = true;
+    return;
+  }
+  std::memcpy(upload.data, job.data.data(), job.data.size());
+  for (uint32_t i = 0; i < job.region_count; ++i) {
+    job.regions[i].bufferOffset += upload.offset;
+  }
+  texture.content_hash = job.hash;
+  texture.uploaded = true;
+  ++g.upload_count;
+  g.upload_bytes += job.data.size();
   Barrier(cb, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
   g_vk.dfn->vkCmdCopyBufferToImage(cb, upload.buffer, texture.image,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, regions);
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, job.region_count,
+                                   job.regions);
   Barrier(cb, texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
           VK_ACCESS_TRANSFER_WRITE_BIT,
           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
           VK_ACCESS_SHADER_READ_BIT);
-  return true;
+}
+
+void Work(std::stop_token stop) {
+  for (;;) {
+    std::shared_ptr<TextureJob> job;
+    {
+      std::unique_lock lock(g.mutex);
+      g.work_ready.wait(lock, stop, [] { return !g.queue.empty(); });
+      if (stop.stop_requested()) {
+        return;
+      }
+      job = std::move(g.queue.front());
+      g.queue.pop_front();
+    }
+    ReadTexture(*job);
+    {
+      std::lock_guard lock(g.mutex);
+      job->done = true;
+    }
+    g.job_done.notify_all();
+  }
+}
+
+// Render thread: applies the texture's read once it is done. With wait, a
+// read still queued or running is waited for.
+void FinishJob(Texture& texture, VkCommandBuffer cb, bool wait) {
+  TextureJob* job = texture.job.get();
+  if (!job) {
+    return;
+  }
+  if (!job->done) {
+    if (!wait) {
+      return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    std::unique_lock lock(g.mutex);
+    g.job_done.wait(lock, [job] { return job->done.load(); });
+    g.wait_ns += NsSince(start);
+  }
+  ApplyJob(texture, *job, cb);
+  texture.job.reset();
 }
 
 xenos::xe_gpu_texture_fetch_t Decode(const FetchConstant& fetch) {
@@ -533,6 +674,9 @@ FetchConstant LoadFetchConstant(const uint8_t* big_endian) {
 
 bool Initialize(uint32_t scale) {
   g.scale = scale;
+  for (uint32_t i = 0; i < 2; ++i) {
+    g.workers.emplace_back(Work);
+  }
   const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   if (!CreateImage(g.defaults[0], VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0,
                    usage) ||
@@ -554,7 +698,7 @@ bool Initialize(uint32_t scale) {
   return true;
 }
 
-Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame) {
+Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame, bool wait) {
   if (!g.defaults_ready) {
     PrepareDefaults(upload_cb);
   }
@@ -630,18 +774,12 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   std::unique_ptr<Texture>& slot = g.textures[key];
   if (!slot) {
     slot = std::make_unique<Texture>();
-    if (!CreateImage(*slot, VK_IMAGE_TYPE_2D, t.info.format, t.width, t.height, 1, t.layers,
-                     cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                     t.max_level + 1)) {
-      REXLOG_ERROR("native renderer: could not create a {}x{} texture", t.width, t.height);
-      g.textures.erase(key);
-      return binding;
-    }
   }
   Texture& texture = *slot;
   texture.last_used = frame;
-  if (texture.checked_frame != frame) {
+  const auto start = std::chrono::steady_clock::now();
+  FinishJob(texture, upload_cb, wait);
+  if (texture.checked_frame != frame && !texture.job) {
     texture.checked_frame = frame;
     const bool watch =
         REXCVAR_GET(svr_native_texture_write_watch) && frame >= texture.dynamic_until;
@@ -662,16 +800,31 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
           texture.dirty_streak = 0;
         }
       }
-      const auto start = std::chrono::steady_clock::now();
-      if (UploadTexture(texture, t, upload_cb, watch && frame >= texture.dynamic_until)) {
-        ++g.upload_count;
-        g.upload_bytes += uint64_t(t.width) * t.height * t.layers
-                          << t.info.bytes_per_block_log2 >> (t.info.block_size == 4 ? 4 : 0);
+      auto job = std::make_shared<TextureJob>();
+      job->t = t;
+      job->cube = cube;
+      job->create_image = !texture.image;
+      job->watch = watch && frame >= texture.dynamic_until;
+      job->had_upload = texture.uploaded;
+      job->previous_hash = texture.content_hash;
+      texture.job = job;
+      if (wait || !REXCVAR_GET(svr_native_async_textures) || g.workers.empty()) {
+        ReadTexture(*job);
+        job->done = true;
+        FinishJob(texture, upload_cb, true);
+      } else {
+        std::lock_guard lock(g.mutex);
+        g.queue.push_back(std::move(job));
+        g.work_ready.notify_one();
       }
-      g.upload_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                  std::chrono::steady_clock::now() - start)
-                                  .count());
     }
+  }
+  g.upload_ns += NsSince(start);
+  if (!texture.image) {
+    if (!texture.job) {
+      g.textures.erase(key);  // the image could not be created; try again later
+    }
+    return binding;
   }
   if (!texture.uploaded) {
     return binding;
@@ -778,16 +931,23 @@ void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t widt
   }
 }
 
-void TakeUploadStats(uint64_t& count, uint64_t& bytes, uint64_t& ns) {
-  count = g.upload_count;
-  bytes = g.upload_bytes;
-  ns = g.upload_ns;
-  g.upload_count = g.upload_bytes = g.upload_ns = 0;
+void TakeUploadStats(UploadStats& stats) {
+  stats = {g.upload_count,         g.upload_bytes,         g.upload_ns,         g.wait_ns,
+           g.read_ns.exchange(0), g.watch_ns.exchange(0), g.hash_ns.exchange(0)};
+  g.upload_count = g.upload_bytes = g.upload_ns = g.wait_ns = 0;
+}
+
+void Shutdown() {
+  for (std::jthread& worker : g.workers) {
+    worker.request_stop();
+  }
+  g.work_ready.notify_all();
+  g.workers.clear();  // joins
 }
 
 void EvictUnused(uint64_t frame) {
   for (auto it = g.textures.begin(); it != g.textures.end();) {
-    if (it->second->last_used + kEvictAfterFrames < frame) {
+    if (it->second->last_used + kEvictAfterFrames < frame && !it->second->job) {
       RetireTexture(*it->second);
       it = g.textures.erase(it);
     } else {

@@ -27,8 +27,14 @@ struct Binding {
 };
 
 // Records guest-memory uploads into upload_cb when a texture is new or its
-// data changed this frame. Unsupported textures bind the default image.
-Binding Bind(const FetchConstant& fetch, VkCommandBuffer upload_cb, uint64_t frame);
+// data changed. Reading and converting guest data runs on worker threads;
+// without wait, a texture still being read binds its previous content (or
+// the default image when new), with wait the read is waited for.
+// Unsupported textures bind the default image.
+Binding Bind(const FetchConstant& fetch, VkCommandBuffer upload_cb, uint64_t frame, bool wait);
+
+// Stops the worker threads; call before the device goes away.
+void Shutdown();
 
 // The image a resolve writes for a destination texture fetch constant,
 // created on first use in TRANSFER_DST-compatible form. Later Binds of a
@@ -42,8 +48,17 @@ struct ResolveTarget {
 };
 ResolveTarget GetResolveTarget(const FetchConstant& fetch, bool red_blue_swapped);
 
-// Textures uploaded since the last call: count, bytes and CPU time.
-void TakeUploadStats(uint64_t& count, uint64_t& bytes, uint64_t& ns);
+// Textures uploaded since the last call, and the CPU time checking them took.
+struct UploadStats {
+  uint64_t count;
+  uint64_t bytes;
+  uint64_t ns;        // render thread time on textures
+  uint64_t wait_ns;   // of which waiting for workers
+  uint64_t read_ns;   // reading guest data, any thread
+  uint64_t watch_ns;  // of which write-protecting pages
+  uint64_t hash_ns;   // of which hashing guest data
+};
+void TakeUploadStats(UploadStats& stats);
 
 // Destroys guest-memory textures no draw has used for a while, so memory does
 // not grow with every arena and attire the session loads.
