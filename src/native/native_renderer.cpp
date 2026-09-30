@@ -18,6 +18,7 @@
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/vulkan/util.h>
 
+#include "native/guest_decode.h"
 #include "native/shader_library.h"
 #include "native/textures.h"
 #include "native/vk_context.h"
@@ -52,6 +53,7 @@ namespace svr::native {
 
 namespace {
 
+using namespace guest;
 using rex::ui::vulkan::VulkanDevice;
 namespace vk_util = rex::ui::vulkan::util;
 
@@ -72,19 +74,8 @@ constexpr uint32_t kDevicePixelShader = 0x3244;
 constexpr uint32_t kDeviceVertexShader = 0x3248;
 // Texture objects keep their fetch constant here.
 constexpr uint32_t kTextureFetchConstant = 0x1C;
-// Surface objects: packed size (width - 1 in bits 31:18, height - 1 in 17:3).
+// Surface objects: packed size (DecodeSurfaceSize).
 constexpr uint32_t kSurfaceSize = 0x24;
-
-// Register mirror groups: first register, device offset, count.
-struct MirrorGroup {
-  uint32_t first;
-  uint32_t offset;
-  uint32_t count;
-};
-constexpr MirrorGroup kMirrorGroups[] = {
-    {0x2000, 0x2880, 19}, {0x2100, 0x28CC, 21}, {0x2180, 0x2920, 5},  {0x2200, 0x2934, 12},
-    {0x2280, 0x2964, 21}, {0x2300, 0x29B8, 38}, {0x2380, 0x2A50, 8},
-};
 
 enum Reg : uint32_t {
   RB_SURFACE_INFO = 0x2000,
@@ -115,35 +106,6 @@ enum Reg : uint32_t {
   RB_COLOR_CLEAR = 0x231E,
 };
 
-uint32_t LoadBE32(const uint8_t* p) {
-  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
-}
-
-uint16_t LoadBE16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
-
-float LoadBEFloat(const uint8_t* p) {
-  const uint32_t bits = LoadBE32(p);
-  float value;
-  std::memcpy(&value, &bits, 4);
-  return value;
-}
-
-uint32_t ReadReg(const uint8_t* d3d, uint32_t reg) {
-  for (const MirrorGroup& group : kMirrorGroups) {
-    if (reg >= group.first && reg < group.first + group.count) {
-      return LoadBE32(d3d + group.offset + (reg - group.first) * 4);
-    }
-  }
-  return 0;
-}
-
-float ReadRegFloat(const uint8_t* d3d, uint32_t reg) {
-  const uint32_t bits = ReadReg(d3d, reg);
-  float value;
-  std::memcpy(&value, &bits, 4);
-  return value;
-}
-
 bool Tracing();
 
 #define TRACE(...)                                              \
@@ -151,91 +113,7 @@ bool Tracing();
     if (Tracing()) REXLOG_INFO("native trace: " __VA_ARGS__); \
   } while (0)
 
-void SwapCopy32(uint32_t* dst, const uint8_t* src, size_t dwords) {
-  for (size_t i = 0; i < dwords; ++i) {
-    dst[i] = LoadBE32(src + i * 4);
-  }
-}
-
 // --- Vertex declarations ----------------------------------------------------
-
-// XenosRecomp's SPIR-V vertex input locations (non-re:Blue table), and whether
-// the shader declares the input as uint4.
-struct InputLocation {
-  uint8_t usage;
-  uint8_t index;
-  uint8_t location;
-  bool is_uint;
-};
-constexpr InputLocation kInputLocations[] = {
-    {0, 0, 0, false},   // POSITION0
-    {3, 0, 1, true},    // NORMAL0
-    {6, 0, 2, true},    // TANGENT0
-    {7, 0, 3, true},    // BINORMAL0
-    {5, 0, 4, false},   // TEXCOORD0
-    {5, 1, 5, false},   // TEXCOORD1
-    {5, 2, 6, false},   // TEXCOORD2
-    {5, 3, 7, false},   // TEXCOORD3
-    {10, 0, 8, false},  // COLOR0
-    {2, 0, 9, true},    // BLENDINDICES0
-    {1, 0, 10, false},  // BLENDWEIGHT0
-    {10, 1, 11, false}, // COLOR1
-    {5, 4, 12, false},  // TEXCOORD4
-    {5, 5, 13, false},  // TEXCOORD5
-    {5, 6, 14, false},  // TEXCOORD6
-    {5, 7, 15, false},  // TEXCOORD7
-};
-
-struct DeclType {
-  uint32_t type;
-  VkFormat float_format;
-  VkFormat uint_format;
-  bool sixteen_bit;
-  bool packed_normal;  // 10_11_11 / 11_11_10, decoded by the shader
-};
-constexpr DeclType kDeclTypes[] = {
-    {0x2C83A4, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, false},
-    {0x2C23A5, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32_UINT, false, false},
-    {0x2A23B9, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_UINT, false, false},
-    {0x1A23A6, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_UINT, false, false},
-    {0x182886, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_UINT, false, false},
-    {0x1A2286, VK_FORMAT_R8G8B8A8_USCALED, VK_FORMAT_R8G8B8A8_UINT, false, false},
-    {0x1A2386, VK_FORMAT_R8G8B8A8_USCALED, VK_FORMAT_R8G8B8A8_UINT, false, false},
-    {0x1A2086, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT, false, false},
-    {0x1A2186, VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R8G8B8A8_UINT, false, false},
-    {0x2C2359, VK_FORMAT_R16G16_SSCALED, VK_FORMAT_R16G16_UINT, true, false},
-    {0x1A235A, VK_FORMAT_R16G16B16A16_SSCALED, VK_FORMAT_R16G16B16A16_UINT, true, false},
-    {0x2C2159, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, true, false},
-    {0x1A215A, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_UINT, true, false},
-    {0x2C2059, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16_UINT, true, false},
-    {0x1A205A, VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_UINT, true, false},
-    {0x2C82A1, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, false},
-    {0x2A2287, VK_FORMAT_A2B10G10R10_USCALED_PACK32, VK_FORMAT_R32_UINT, false, false},
-    {0x2A2187, VK_FORMAT_A2B10G10R10_SNORM_PACK32, VK_FORMAT_R32_UINT, false, false},
-    // Signed normalized 11_11_10 normals (X 10 bits, Y and Z 11): raw uint,
-    // decoded by the shader. Its decoder knows no other packed layout.
-    {0x2A2191, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, false, true},
-    {0x2C235F, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_UINT, true, false},
-    {0x1A2360, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UINT, true, false},
-};
-
-const DeclType* FindDeclType(uint32_t type) {
-  for (const DeclType& t : kDeclTypes) {
-    if (t.type == type) {
-      return &t;
-    }
-  }
-  return nullptr;
-}
-
-const InputLocation* FindLocation(uint32_t usage, uint32_t index) {
-  for (const InputLocation& l : kInputLocations) {
-    if (l.usage == usage && l.index == index) {
-      return &l;
-    }
-  }
-  return nullptr;
-}
 
 constexpr uint32_t kMaxAttributes = 16;
 constexpr uint32_t kDummyBinding = 15;
@@ -347,30 +225,6 @@ struct RenderTarget {
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
   bool is_depth = false;
 };
-
-VkFormat ColorTargetFormat(uint32_t color_format) {
-  switch (color_format) {
-    case 2:   // k_2_10_10_10
-    case 10:  // k_2_10_10_10_AS_10_10_10_10
-      return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-    case 3:   // k_2_10_10_10_FLOAT
-    case 7:   // k_16_16_16_16_FLOAT
-    case 12:  // k_2_10_10_10_FLOAT_AS_16_16_16_16
-      return VK_FORMAT_R16G16B16A16_SFLOAT;
-    case 4:
-      return VK_FORMAT_R16G16_SNORM;
-    case 5:
-      return VK_FORMAT_R16G16B16A16_SNORM;
-    case 6:
-      return VK_FORMAT_R16G16_SFLOAT;
-    case 14:
-      return VK_FORMAT_R32_SFLOAT;
-    case 15:
-      return VK_FORMAT_R32G32_SFLOAT;
-    default:  // k_8_8_8_8, k_8_8_8_8_GAMMA
-      return VK_FORMAT_R8G8B8A8_UNORM;
-  }
-}
 
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
 
@@ -1122,9 +976,9 @@ void OnSetRenderTarget(const uint8_t* base, uint32_t index, uint32_t surface) {
   if (!g.device || index >= 4 || !surface) {
     return;
   }
-  const uint32_t size = LoadBE32(base + surface + kSurfaceSize);
-  g.surface_width[index] = (size >> 18) + 1;
-  g.surface_height[index] = ((size >> 3) & 0x7FFF) + 1;
+  const SurfaceSize size = DecodeSurfaceSize(LoadBE32(base + surface + kSurfaceSize));
+  g.surface_width[index] = size.width;
+  g.surface_height[index] = size.height;
 }
 
 void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t rect[4],
@@ -1523,29 +1377,17 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
   }
   // Index buffer object: Common bit 31 = 32-bit indices, +0x18 = address.
   const bool index32 = (LoadBE32(base + index_buffer) & 0x80000000) != 0;
-  const uint32_t reset = index32 ? 0xFFFFFFFFu : 0xFFFFu;
-  // The GPU sees the physical address; the 0xE0000000 range is offset by
-  // 0x1000, as D3D computes it for the draw packet.
   const uint32_t index_address = (LoadBE32(base + index_buffer + 0x18) & ~3u) +
                                  start_index * (index32 ? 4 : 2);
-  const uint8_t* index_data = TranslatePhysical(
-      (index_address & 0x1FFFFFFF) + (index_address >= 0xE0000000 ? 0x1000 : 0));
+  const uint8_t* index_data = TranslatePhysical(ToPhysical(index_address));
 
   std::vector<uint32_t>& indices = g.index_scratch;
   indices.resize(index_count);
-  uint32_t min_index = UINT32_MAX, max_index = 0;
-  for (uint32_t i = 0; i < index_count; ++i) {
-    const uint32_t index =
-        index32 ? LoadBE32(index_data + i * 4) : LoadBE16(index_data + i * 2);
-    indices[i] = index;
-    if (index != reset) {
-      min_index = std::min(min_index, index);
-      max_index = std::max(max_index, index);
-    }
-  }
-  if (min_index > max_index) {
+  const IndexRange range = ScanIndices(index_data, index_count, index32, indices.data());
+  if (range.empty()) {
     return;
   }
+  const uint32_t min_index = range.min, max_index = range.max;
 
   uint32_t strides[kMaxStreams];
   std::memcpy(strides, g.stream_strides, sizeof(strides));
@@ -1592,20 +1434,8 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
     ++g.stats.other;
     return;
   }
-  auto* out = reinterpret_cast<uint32_t*>(index_upload.data);
-  auto rebase = [&](uint32_t index) { return index == reset ? 0xFFFFFFFFu : index - min_index; };
-  if (quads) {
-    for (uint32_t i = 0, o = 0; i + 3 < index_count; i += 4, o += 6) {
-      const uint32_t* q = &indices[i];
-      const uint32_t tri[6] = {rebase(q[0]), rebase(q[1]), rebase(q[2]),
-                               rebase(q[0]), rebase(q[2]), rebase(q[3])};
-      std::memcpy(out + o, tri, sizeof(tri));
-    }
-  } else {
-    for (uint32_t i = 0; i < index_count; ++i) {
-      out[i] = rebase(indices[i]);
-    }
-  }
+  RebaseIndices(indices.data(), index_count, index32, quads, min_index,
+                reinterpret_cast<uint32_t*>(index_upload.data));
   const VkCommandBuffer cb = g.slot->main_cb;
   const auto& dfn = *g_vk.dfn;
   dfn.vkCmdBindIndexBuffer(cb, index_upload.buffer, index_upload.offset, VK_INDEX_TYPE_UINT32);

@@ -13,6 +13,7 @@ set(SVR2011_SOURCES
     src/d3d_census.cpp
     src/native/native_renderer.cpp
     src/native/shader_library.cpp
+    src/native/texture_layout.cpp
     src/native/textures.cpp
     src/native/vk_context.cpp
 )
@@ -73,4 +74,22 @@ if(REXSDK_DIR)
     # The native renderer includes the SDK's Vulkan headers, which include RenderDoc's.
     target_include_directories(svr2011 PRIVATE ${REXSDK_DIR}/thirdparty/renderdoc
         ${REXSDK_DIR}/thirdparty/xxHash)
+endif()
+
+# Offline tests of the native renderer's pure code (decoding, tiling): Catch2
+# from the SDK tree. scripts/build.ps1 -Action Test configures, builds and runs
+# them; they never ship.
+option(SVR_BUILD_TESTS "Build the native renderer's offline tests" OFF)
+if(SVR_BUILD_TESTS AND REXSDK_DIR)
+    enable_testing()
+    add_executable(svr2011_native_tests
+        tests/native/test_guest_decode.cpp
+        tests/native/test_texture_layout.cpp
+        src/native/texture_layout.cpp
+        ${REXSDK_DIR}/src/graphics/pipeline/texture/util.cpp
+        ${REXSDK_DIR}/thirdparty/catch2/extras/catch_amalgamated.cpp)
+    target_include_directories(svr2011_native_tests PRIVATE src
+        ${REXSDK_DIR}/thirdparty/catch2/extras)
+    target_link_libraries(svr2011_native_tests PRIVATE rex::runtime)
+    add_test(NAME svr2011_native_tests COMMAND svr2011_native_tests)
 endif()

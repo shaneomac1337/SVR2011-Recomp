@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Configure', 'Build', 'Codegen')][string]$Action = 'Build',
+    [ValidateSet('Configure', 'Build', 'Codegen', 'Test')][string]$Action = 'Build',
     [ValidateSet('D3D12', 'Vulkan')][string]$Renderer = 'D3D12',
     [string]$VisualStudioRoot = 'C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools',
     [string]$WindowsSdkRoot = 'C:/Program Files (x86)/Windows Kits/10',
@@ -56,6 +56,16 @@ if ($Action -eq 'Codegen') {
     Invoke-Hidden "$sdk/bin/rexglue.exe" @('codegen', 'svr2011_manifest.toml', '--ignore-stamp') -LogPath "$projectRoot/analysis/codegen-current.log"
 } elseif ($Action -eq 'Configure') {
     Invoke-Hidden $cmake $configureArguments -LogPath "$projectRoot/analysis/configure$logSuffix.log"
+} elseif ($Action -eq 'Test') {
+    # The native renderer's offline tests (tests/native); needs the source-tree SDK.
+    if ($Renderer -ne 'Vulkan') { throw 'The native renderer tests build with -Renderer Vulkan.' }
+    Invoke-Hidden $cmake ($configureArguments + '-DSVR_BUILD_TESTS=ON') -LogPath "$projectRoot/analysis/configure$logSuffix.log"
+    Invoke-Hidden $cmake @('--build', $buildDirectory, '--parallel', "$Jobs", '--target', 'svr2011_native_tests') -LogPath "$projectRoot/analysis/build-tests.log"
+    Push-Location $buildDirectory
+    try {
+        & "$buildDirectory/svr2011_native_tests.exe"
+        if ($LASTEXITCODE -ne 0) { throw "Native renderer tests failed (exit $LASTEXITCODE)" }
+    } finally { Pop-Location }
 } else {
     Invoke-Hidden $cmake @('--build', $buildDirectory, '--parallel', "$Jobs") -LogPath "$projectRoot/analysis/build$logSuffix.log"
     if ($Renderer -eq 'Vulkan') {

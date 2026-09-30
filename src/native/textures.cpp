@@ -17,6 +17,8 @@
 #include <rex/logging.h>
 #include <rex/ui/vulkan/util.h>
 
+#include "native/guest_decode.h"
+#include "native/texture_layout.h"
 #include "native/vk_context.h"
 
 REXCVAR_DEFINE_INT32(svr_native_anisotropy, 3, "SVR2011",
@@ -70,15 +72,9 @@ namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
 namespace vk_util = rex::ui::vulkan::util;
 
-// Texture objects hold CPU-side addresses, device fetch constants the GPU's
-// physical ones; the 0xE0000000 range is offset by 0x1000.
-uint32_t ToPhysical(uint32_t address) {
-  return (address & 0x1FFFFFFF) + (address >= 0xE0000000 ? 0x1000 : 0);
-}
-
-uint32_t ByteSwap32(uint32_t v) {
-  return (v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24);
-}
+using guest::ByteSwap32;
+using guest::ToPhysical;
+using texture_layout::EndianSwap;
 
 struct FormatInfo {
   VkFormat format = VK_FORMAT_UNDEFINED;
@@ -345,34 +341,6 @@ uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t min_l
   return index;
 }
 
-void EndianSwap(uint8_t* data, size_t size, xenos::Endian endian) {
-  switch (endian) {
-    case xenos::Endian::k8in16:
-      for (size_t i = 0; i + 1 < size; i += 2) {
-        std::swap(data[i], data[i + 1]);
-      }
-      break;
-    case xenos::Endian::k8in32:
-      for (size_t i = 0; i + 3 < size; i += 4) {
-        uint32_t v;
-        std::memcpy(&v, data + i, 4);
-        v = ByteSwap32(v);
-        std::memcpy(data + i, &v, 4);
-      }
-      break;
-    case xenos::Endian::k16in32:
-      for (size_t i = 0; i + 3 < size; i += 4) {
-        std::swap(data[i], data[i + 2]);
-        std::swap(data[i + 1], data[i + 3]);
-      }
-      break;
-    default:
-      break;
-  }
-}
-
-// Uploads mip 0 of a 2D texture from guest memory; false when the data is
-// unchanged since the last upload.
 // Guest texture: 2D or cube, all mip levels (base from base_page, the rest
 // from mip_page, with the packed mip tail) per the SDK's guest layout.
 struct GuestTexture {
@@ -447,29 +415,15 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb) 
       texture_util::GetPackedMipOffset(t.width, t.height, 1, fetch.format, level, tail_x, tail_y,
                                        tail_z);
     }
-    const uint32_t pitch_blocks = stored.row_pitch_bytes >> bpb_log2;
     for (uint32_t layer = 0; layer < t.layers; ++layer) {
       uint8_t* dest = upload.data + offset + size_t(layer) * row_bytes * by;
       if (!source) {
         std::memset(dest, 0, row_bytes * by);
         continue;
       }
-      const uint8_t* layer_source = source + size_t(layer) * stored.array_slice_stride_bytes;
-      for (uint32_t y = 0; y < by; ++y) {
-        uint8_t* row = dest + size_t(y) * row_bytes;
-        if (fetch.tiled) {
-          for (uint32_t x = 0; x < bx; ++x) {
-            const int32_t tiled = texture_util::GetTiledOffset2D(
-                int32_t(x + tail_x), int32_t(y + tail_y), pitch_blocks, bpb_log2);
-            std::memcpy(row + x * bytes_per_block, layer_source + tiled, bytes_per_block);
-          }
-        } else {
-          std::memcpy(row,
-                      layer_source + size_t(y + tail_y) * stored.row_pitch_bytes +
-                          size_t(tail_x) * bytes_per_block,
-                      row_bytes);
-        }
-      }
+      texture_layout::CopyLevelFromGuest(
+          dest, source + size_t(layer) * stored.array_slice_stride_bytes, bx, by, bpb_log2,
+          stored.row_pitch_bytes, fetch.tiled, tail_x, tail_y);
     }
     VkBufferImageCopy& region = regions[region_count++];
     region.bufferOffset = upload.offset + offset;
@@ -676,9 +630,7 @@ void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t widt
   }
   const uint32_t bpp = 1u << info.bytes_per_block_log2;
   const uint32_t pitch = uint32_t(fetch.pitch) << 5;
-  const uint32_t linear_row_bytes =
-      (pitch * bpp + xenos::kTextureLinearRowAlignmentBytes - 1) &
-      ~(xenos::kTextureLinearRowAlignmentBytes - 1);
+  const uint32_t linear_row_bytes = texture_layout::LinearRowBytes(pitch, info.bytes_per_block_log2);
   auto* dest = const_cast<uint8_t*>(TranslatePhysical(ToPhysical(uint32_t(fetch.base_address) << 12)));
   std::vector<uint8_t> row(size_t(width) * bpp);
   for (uint32_t y = 0; y < height; ++y) {
@@ -687,9 +639,9 @@ void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t widt
     EndianSwap(row.data(), row.size(), fetch.endianness);
     if (fetch.tiled) {
       for (uint32_t x = 0; x < width; ++x) {
-        const int32_t offset =
-            texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), pitch, info.bytes_per_block_log2);
-        std::memcpy(dest + offset, row.data() + size_t(x) * bpp, bpp);
+        std::memcpy(dest + texture_layout::GuestOffset(x, y, pitch, info.bytes_per_block_log2,
+                                                       true, linear_row_bytes),
+                    row.data() + size_t(x) * bpp, bpp);
       }
     } else {
       std::memcpy(dest + size_t(y) * linear_row_bytes, row.data(), row.size());
