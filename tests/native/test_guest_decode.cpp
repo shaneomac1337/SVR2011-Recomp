@@ -98,3 +98,46 @@ TEST_CASE("quad lists become two triangles each") {
     CHECK(out[i] == expected[i]);
   }
 }
+
+// Where a clip-space position lands in pixels through a ClipTransform.
+static void Project(const ClipTransform& t, float x, float y, float w, float& px, float& py) {
+  const float cx = x * t.ndc_scale[0] + t.offset[0] * w;
+  const float cy = y * t.ndc_scale[1] + t.offset[1] * w;
+  px = cx / w * t.x_scale + t.x_offset;
+  py = cy / w * t.y_scale + t.y_offset;
+}
+
+TEST_CASE("clip transform keeps the guest viewport for clip-space draws") {
+  const ClipTransform t = ComputeClipTransform(0x43F, 640, 640, -360, 360, 1280, 720, false);
+  float px, py;
+  Project(t, -1, 1, 1, px, py);
+  CHECK(px == Catch::Approx(0));
+  CHECK(py == Catch::Approx(0));
+  Project(t, 0.5f, -0.5f, 2, px, py);  // w = 2: (0.25, -0.25) in NDC
+  CHECK(px == Catch::Approx(800));
+  CHECK(py == Catch::Approx(450));
+  const ClipTransform h = ComputeClipTransform(0x43F, 640, 640, -360, 360, 1280, 720, true);
+  Project(h, -1, 1, 1, px, py);
+  CHECK(px == Catch::Approx(0.5f).margin(1e-4));
+  CHECK(py == Catch::Approx(0.5f).margin(1e-4));
+}
+
+TEST_CASE("pre-transformed positions land on their pixels") {
+  // The game's full-screen passes: VTE scales off, positions in pixels.
+  const ClipTransform t = ComputeClipTransform(0x400, 640, 640, -360, 360, 1280, 720, false);
+  float px, py;
+  for (const float x : {0.0f, 100.0f, 1280.0f}) {
+    for (const float y : {0.0f, 333.0f, 720.0f}) {
+      Project(t, x, y, 1, px, py);
+      CHECK(px == Catch::Approx(x).margin(1e-3));
+      CHECK(py == Catch::Approx(y).margin(1e-3));
+    }
+  }
+  // Inside Vulkan's clip volume, so nothing is clipped.
+  CHECK(1280 * t.ndc_scale[0] + t.offset[0] == Catch::Approx(1));
+  CHECK(720 * t.ndc_scale[1] + t.offset[1] == Catch::Approx(-1));
+  const ClipTransform h = ComputeClipTransform(0x400, 0, 0, 0, 0, 1280, 720, true);
+  Project(h, 10, 20, 1, px, py);
+  CHECK(px == Catch::Approx(10.5f).margin(1e-4));
+  CHECK(py == Catch::Approx(20.5f).margin(1e-4));
+}

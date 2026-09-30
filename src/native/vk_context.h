@@ -47,8 +47,9 @@ struct SharedConstants {
   uint32_t swapped_texcoords;          // 544
   float half_pixel_offset[2];          // 548
   float alpha_threshold;               // 556
+  float ndc_scale[2];                  // 560, g_NdcScale
 };
-static_assert(sizeof(SharedConstants) == 560);
+static_assert(sizeof(SharedConstants) == 568);
 
 struct Upload {
   uint8_t* data = nullptr;

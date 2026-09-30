@@ -195,6 +195,54 @@ constexpr SurfaceSize DecodeSurfaceSize(uint32_t packed) {
   return {(packed >> 18) + 1, ((packed >> 3) & 0x7FFF) + 1};
 }
 
+// --- Clip space -------------------------------------------------------------
+
+// How a draw's positions reach the target. The converted vertex shaders end
+// with oPos.xy = oPos.xy * ndc_scale + offset * oPos.w, then the viewport
+// (x_scale, x_offset, y_scale, y_offset: D3D's form, in guest pixels) maps
+// clip space to pixels. With PA_CL_VTE_CNTL's scales on, positions are in clip
+// space and the guest viewport is used as is. With them off, positions are
+// already in pixels (the game's full-screen passes); Vulkan clips before the
+// viewport, so the shader maps them to clip space for a full-target viewport.
+struct ClipTransform {
+  float ndc_scale[2];
+  float offset[2];
+  float x_scale, x_offset, y_scale, y_offset;
+};
+
+// half_pixel: shift by half a guest pixel right and down (D3D9 pixel centres).
+inline ClipTransform ComputeClipTransform(uint32_t vte, float x_scale, float x_offset,
+                                          float y_scale, float y_offset, float target_width,
+                                          float target_height, bool half_pixel) {
+  const float sx = (vte & 1) ? x_scale : 1.0f;
+  const float ox = (vte & 2) ? x_offset : 0.0f;
+  const float sy = (vte & 4) ? y_scale : 1.0f;
+  const float oy = (vte & 8) ? y_offset : 0.0f;
+  ClipTransform t;
+  if ((vte & 1) && (vte & 4)) {
+    t.ndc_scale[0] = t.ndc_scale[1] = 1.0f;
+    t.offset[0] = half_pixel && sx != 0.0f ? 0.5f / sx : 0.0f;
+    t.offset[1] = half_pixel && sy != 0.0f ? 0.5f / sy : 0.0f;
+    t.x_scale = sx;
+    t.x_offset = ox;
+    t.y_scale = sy;
+    t.y_offset = oy;
+    return t;
+  }
+  // pixel = position / w * s + o on each axis, into a viewport of the whole
+  // target (clip x -1..1 left to right, y 1..-1 top to bottom).
+  const float half_w = target_width * 0.5f, half_h = target_height * 0.5f;
+  t.ndc_scale[0] = sx / half_w;
+  t.offset[0] = (ox - half_w) / half_w + (half_pixel ? 1.0f / target_width : 0.0f);
+  t.ndc_scale[1] = -sy / half_h;
+  t.offset[1] = (half_h - oy) / half_h - (half_pixel ? 1.0f / target_height : 0.0f);
+  t.x_scale = half_w;
+  t.x_offset = half_w;
+  t.y_scale = -half_h;
+  t.y_offset = half_h;
+  return t;
+}
+
 // --- Index buffers ----------------------------------------------------------
 
 // The range of vertices a run of indices touches, skipping the restart index.

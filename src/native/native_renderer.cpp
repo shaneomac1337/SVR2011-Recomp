@@ -47,6 +47,8 @@ REXCVAR_DEFINE_BOOL(svr_native_debug_no_blend, false, "SVR2011",
 REXCVAR_DEFINE_UINT64(svr_native_trace_ps, 0, "SVR2011",
                       "Native renderer debugging: in traced frames, dump the constants of draws "
                       "using this pixel shader hash");
+REXCVAR_DEFINE_UINT64(svr_native_debug_skip_ps, 0, "SVR2011",
+                      "Native renderer debugging: skip draws using this pixel shader hash");
 REXCVAR_DEFINE_BOOL(svr_native_half_pixel_offset, true, "SVR2011",
                     "Native renderer: shift geometry by half a pixel for D3D9-style pixel "
                     "centres, like the emulated path's half_pixel_offset");
@@ -727,18 +729,30 @@ bool EnsureRendering(const uint8_t* d3d, bool need_depth) {
   return true;
 }
 
+// The draw's clip transform (guest_decode.h) for the active target. Pixel
+// centres at .0 (PA_SU_VTX_CNTL pix_center 0, as in D3D9) shift geometry by
+// half a pixel right and down, as the emulated path does.
+ClipTransform DrawClipTransform(const uint8_t* d3d) {
+  const bool half_pixel =
+      REXCVAR_GET(svr_native_half_pixel_offset) && !(ReadReg(d3d, PA_SU_VTX_CNTL) & 1);
+  return ComputeClipTransform(
+      ReadReg(d3d, PA_CL_VTE_CNTL), ReadRegFloat(d3d, PA_CL_VPORT_XSCALE),
+      ReadRegFloat(d3d, PA_CL_VPORT_XOFFSET), ReadRegFloat(d3d, PA_CL_VPORT_YSCALE),
+      ReadRegFloat(d3d, PA_CL_VPORT_YOFFSET), float(g.active_color->guest_width),
+      float(g.active_color->guest_height), half_pixel);
+}
+
 void SetDynamicState(const uint8_t* d3d, VkCommandBuffer cb) {
   const auto& dfn = *g_vk.dfn;
+  const ClipTransform clip = DrawClipTransform(d3d);
+  const float x_scale = clip.x_scale, x_offset = clip.x_offset;
+  const float y_scale = clip.y_scale, y_offset = clip.y_offset;
   const uint32_t vte = ReadReg(d3d, PA_CL_VTE_CNTL);
-  const float x_scale = (vte & 1) ? ReadRegFloat(d3d, PA_CL_VPORT_XSCALE) : 1.0f;
-  const float x_offset = (vte & 2) ? ReadRegFloat(d3d, PA_CL_VPORT_XOFFSET) : 0.0f;
-  const float y_scale = (vte & 4) ? ReadRegFloat(d3d, PA_CL_VPORT_YSCALE) : 1.0f;
-  const float y_offset = (vte & 8) ? ReadRegFloat(d3d, PA_CL_VPORT_YOFFSET) : 0.0f;
   const float z_scale = (vte & 16) ? ReadRegFloat(d3d, PA_CL_VPORT_ZSCALE) : 1.0f;
   const float z_offset = (vte & 32) ? ReadRegFloat(d3d, PA_CL_VPORT_ZOFFSET) : 0.0f;
   const float scale = float(g.scale);
-  // The converted vertex shaders negate y (-fvk-invert-y), so D3D's negative
-  // y scale becomes a positive Vulkan viewport height.
+  // The converted vertex shaders negate y (-fvk-invert-y); this viewport undoes
+  // it, reproducing D3D's transform for either sign of the y scale.
   VkViewport viewport;
   viewport.x = (x_offset - x_scale) * scale;
   viewport.width = 2.0f * x_scale * scale;
@@ -749,10 +763,6 @@ void SetDynamicState(const uint8_t* d3d, VkCommandBuffer cb) {
   if (viewport.width <= 0.0f) {
     viewport.x = 0.0f;
     viewport.width = float(g.active_color->width);
-  }
-  if (viewport.height < 0.0f) {
-    viewport.y += viewport.height;
-    viewport.height = -viewport.height;
   }
   dfn.vkCmdSetViewport(cb, 0, 1, &viewport);
 
@@ -852,16 +862,12 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, uint32_t fe
   SwapCopy32(shared->booleans, d3d + kDeviceBooleans, 8);
   shared->swapped_texcoords = swapped_texcoords;
   shared->alpha_threshold = ReadRegFloat(d3d, RB_ALPHA_REF);
-  // Pixel centres at .0 (PA_SU_VTX_CNTL pix_center 0, as in D3D9): shift
-  // geometry by half a pixel right and down, as the emulated path does. The
-  // shader adds this in clip space before the viewport maps it to pixels.
-  if (REXCVAR_GET(svr_native_half_pixel_offset) && !(ReadReg(d3d, PA_SU_VTX_CNTL) & 1)) {
-    const uint32_t vte = ReadReg(d3d, PA_CL_VTE_CNTL);
-    const float x_scale = (vte & 1) ? ReadRegFloat(d3d, PA_CL_VPORT_XSCALE) : 1.0f;
-    const float y_scale = (vte & 4) ? ReadRegFloat(d3d, PA_CL_VPORT_YSCALE) : 1.0f;
-    shared->half_pixel_offset[0] = x_scale != 0.0f ? 0.5f / x_scale : 0.0f;
-    shared->half_pixel_offset[1] = y_scale != 0.0f ? 0.5f / y_scale : 0.0f;
-  }
+  // Clip transform: pre-transformed positions to clip space, half-pixel shift.
+  const ClipTransform clip = DrawClipTransform(d3d);
+  shared->half_pixel_offset[0] = clip.offset[0];
+  shared->half_pixel_offset[1] = clip.offset[1];
+  shared->ndc_scale[0] = clip.ndc_scale[0];
+  shared->ndc_scale[1] = clip.ndc_scale[1];
   if (g.shared_address && REXCVAR_GET(svr_native_reuse_constants) &&
       std::memcmp(&g.last_shared, shared, sizeof(*shared)) == 0) {
     push.shared_constants = g.shared_address;
@@ -1198,6 +1204,11 @@ const VertexLayout* PrepareDraw(const uint8_t* base, const uint8_t* d3d,
     return nullptr;
   }
 
+  if (pixel_shader->hash == REXCVAR_GET(svr_native_debug_skip_ps)) {
+    ++g.stats.other;
+    return nullptr;
+  }
+
   PipelineKey key;
   std::memset(&key, 0, sizeof(key));
   key.vertex_shader = vertex_shader->hash;
@@ -1335,8 +1346,26 @@ void OnDrawVertices(const uint8_t* base, uint32_t device, uint32_t primitive,
     dfn.vkCmdDraw(cb, vertex_count, 1, 0, 0);
   }
   ++g.stats.drawn;
-  TRACE("draw vertices prim {} count {} stride {} blend {:08X} depthctl {:08X}", primitive,
-        vertex_count, stride, ReadReg(d3d, RB_BLENDCONTROL0), ReadReg(d3d, RB_DEPTHCONTROL));
+  TRACE("draw vertices prim {} count {} stride {} blend {:08X} depthctl {:08X} colorctl {:08X} "
+        "mask {:08X} target {}x{} vs {:016x} ps {:016x}",
+        primitive, vertex_count, stride, ReadReg(d3d, RB_BLENDCONTROL0),
+        ReadReg(d3d, RB_DEPTHCONTROL), ReadReg(d3d, RB_COLORCONTROL), ReadReg(d3d, RB_COLOR_MASK),
+        g.active_color ? g.active_color->guest_width : 0,
+        g.active_color ? g.active_color->guest_height : 0,
+        shader_library::Hash(LoadBE32(d3d + kDeviceVertexShader)),
+        shader_library::Hash(LoadBE32(d3d + kDevicePixelShader)));
+  TRACE("  vte {:08X} vport {:.1f} {:.1f} {:.1f} {:.1f} screen scissor {:08X} {:08X} window "
+        "scissor {:08X} {:08X} mode {:08X}",
+        ReadReg(d3d, PA_CL_VTE_CNTL), ReadRegFloat(d3d, PA_CL_VPORT_XSCALE),
+        ReadRegFloat(d3d, PA_CL_VPORT_XOFFSET), ReadRegFloat(d3d, PA_CL_VPORT_YSCALE),
+        ReadRegFloat(d3d, PA_CL_VPORT_YOFFSET), ReadReg(d3d, PA_SC_SCREEN_SCISSOR_TL),
+        ReadReg(d3d, PA_SC_SCREEN_SCISSOR_BR), ReadReg(d3d, PA_SC_WINDOW_SCISSOR_TL),
+        ReadReg(d3d, PA_SC_WINDOW_SCISSOR_BR), ReadReg(d3d, PA_SU_SC_MODE_CNTL));
+  TRACE("  ps c0 {:.6g} {:.6g} {:.6g} {:.6g} c1 {:.6g} {:.6g} {:.6g} {:.6g}",
+        LoadBEFloat(d3d + kDevicePixelConstants), LoadBEFloat(d3d + kDevicePixelConstants + 4),
+        LoadBEFloat(d3d + kDevicePixelConstants + 8), LoadBEFloat(d3d + kDevicePixelConstants + 12),
+        LoadBEFloat(d3d + kDevicePixelConstants + 16), LoadBEFloat(d3d + kDevicePixelConstants + 20),
+        LoadBEFloat(d3d + kDevicePixelConstants + 24), LoadBEFloat(d3d + kDevicePixelConstants + 28));
 }
 
 void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,

@@ -14,10 +14,10 @@ index 4a851c2..2932ea0 100644
  #elif defined(UNLEASHED_RECOMP)
      args[argCount++] = L"-DUNLEASHED_RECOMP";
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..e0bb119 100644
+index 63c37c9..4f56bb0 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
-@@ -42,7 +42,14 @@ struct PushConstants
+@@ -42,7 +42,18 @@ struct PushConstants
  
  [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
  
@@ -29,11 +29,15 @@ index 63c37c9..e0bb119 100644
 +#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 544)
 +#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 548)
 +#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 556)
++// Scales the vertex shader's position before the offset: 1 for draws in clip
++// space, pixels to clip space for pre-transformed ones (PA_CL_VTE_CNTL scale off),
++// which Vulkan would otherwise clip away.
++#define g_NdcScale                 vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 560)
 +#elif defined(REBLUE_RECOMP)
  // 256-bit boolean register file (BD bool addresses reach ~158), then per-usage 16-bit-pair swap masks.
  #define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256 + (i)*4)
  #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 288)
-@@ -68,7 +75,15 @@ struct PushConstants
+@@ -68,7 +79,16 @@ struct PushConstants
  
  #else
  
@@ -43,14 +47,15 @@ index 63c37c9..e0bb119 100644
 +    uint4 g_BooleansArr[2] : packoffset(c32); \
 +    uint g_SwappedTexcoords : packoffset(c34.x); \
 +    float2 g_HalfPixelOffset : packoffset(c34.y); \
-+    float g_AlphaThreshold : packoffset(c34.w);
++    float g_AlphaThreshold : packoffset(c34.w); \
++    float2 g_NdcScale : packoffset(c35.x);
 +
 +#define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
 +#elif defined(REBLUE_RECOMP)
  #define DEFINE_SHARED_CONSTANTS() \
      uint4 g_BooleansArr[2] : packoffset(c16); \
      uint g_SwappedTexcoords : packoffset(c18.x); \
-@@ -95,7 +110,7 @@ uint g_SpecConstants();
+@@ -95,7 +115,7 @@ uint g_SpecConstants();
  
  #endif
  
@@ -59,7 +64,7 @@ index 63c37c9..e0bb119 100644
  // Test Xenos boolean register N in the unified VS(0..127)/PS(128..255) file.
  #define BOOL_BIT(n) ((g_Booleans((n) / 32u) & (1u << ((n) & 31u))) != 0)
  #endif
-@@ -112,10 +127,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -112,10 +132,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
      return dimensions;
  }
  
@@ -78,7 +83,7 @@ index 63c37c9..e0bb119 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -218,12 +240,12 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -218,12 +245,12 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
  
  float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
  {
@@ -93,7 +98,7 @@ index 63c37c9..e0bb119 100644
      // BD's cube-shadow PCF issues up to 9 cube ops per shader (bd_mirror_cs_ps /
      // bd_glass_cs_ps); overflowing this array drops the stored directions and
      // every tfetchCube reads OOB -> point-light shadows vanish.
-@@ -236,7 +258,7 @@ struct CubeMapData
+@@ -236,7 +263,7 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -102,7 +107,7 @@ index 63c37c9..e0bb119 100644
  }
  
  #ifdef REBLUE_RECOMP
-@@ -271,6 +293,25 @@ float4 sintTexcoord(uint mask, float4 value, uint semanticIndex)
+@@ -271,6 +298,25 @@ float4 sintTexcoord(uint mask, float4 value, uint semanticIndex)
      }
      return value;
  }
@@ -129,7 +134,7 @@ index 63c37c9..e0bb119 100644
  float4 tfetchR11G11B10(uint4 value)
  {
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..8f51cc8 100644
+index feaa90b..dd86d4e 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -1,4 +1,17 @@
@@ -321,3 +326,16 @@ index feaa90b..8f51cc8 100644
                          // Bools expand to BOOL_BIT(N) expressions; negate when the jump fires on a clear bit.
                          const bool jumpIfSet = cfInstr.condJmp.condition ^ simpleControlFlow;
                          auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
+@@ -2322,7 +2346,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     if (!hasMtxProjection)
+                 #endif
+                     {
++                #ifdef SVR2011_RECOMP
++                        // g_NdcScale takes pre-transformed (screen space) positions to clip space.
++                        out += "\toPos.xy = oPos.xy * g_NdcScale + g_HalfPixelOffset * oPos.w;\n";
++                #else
+                         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
++                #endif
+                     }
+                 }
+ 
