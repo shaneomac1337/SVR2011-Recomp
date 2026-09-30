@@ -284,6 +284,9 @@ struct State {
   bool rendering = false;
   RenderTarget* active_color = nullptr;
   RenderTarget* active_depth = nullptr;
+  // The depth target last rendered with, for depth resolves whose registers
+  // name no target the renderer knows.
+  RenderTarget* last_depth = nullptr;
   VkPipeline bound_pipeline = VK_NULL_HANDLE;
   // Size of the surfaces set with SetRenderTarget, per index.
   uint32_t surface_width[4] = {1280, 1280, 1280, 1280};
@@ -557,6 +560,9 @@ RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t guest_widt
       EndRendering();
       g.active_color = g.active_depth = nullptr;
     }
+    if (g.last_depth == slot.get()) {
+      g.last_depth = nullptr;
+    }
     std::erase(g.render_target_order, slot.get());
     Retired retired;
     retired.image = slot->image;
@@ -673,6 +679,9 @@ bool EnsureRendering(const uint8_t* d3d, bool need_depth) {
   g.rendering = true;
   g.active_color = color;
   g.active_depth = depth;
+  if (depth) {
+    g.last_depth = depth;
+  }
   TRACE("begin rendering colour {}x{} fmt {} info {:08X} surface {:08X} depth {}", color->width,
         color->height, uint32_t(color->format), ReadReg(d3d, RB_COLOR_INFO),
         ReadReg(d3d, RB_SURFACE_INFO), depth ? "yes" : "no");
@@ -912,13 +921,23 @@ namespace {
 // Copies the current depth target's depth into the destination as R32 float,
 // through a staging buffer since Vulkan cannot blit depth to colour.
 void ResolveDepth(const uint8_t* d3d, const textures::FetchConstant& fetch) {
-  const auto it = g.render_targets.find(
-      uint64_t(ReadReg(d3d, RB_DEPTH_INFO) & 0x10FFF) |
-      uint64_t(ReadReg(d3d, RB_SURFACE_INFO) & 0x3FFF) << 32 | 1ull << 63);
+  const uint64_t key = uint64_t(ReadReg(d3d, RB_DEPTH_INFO) & 0x10FFF) |
+                       uint64_t(ReadReg(d3d, RB_SURFACE_INFO) & 0x3FFF) << 32 | 1ull << 63;
+  const auto it = g.render_targets.find(key);
+  RenderTarget* found = it != g.render_targets.end() ? it->second.get() : g.last_depth;
   if (it == g.render_targets.end()) {
+    // Otherwise the texture would read as transparent black (format 22).
+    static uint32_t logged = 0;
+    if (logged++ < 8) {
+      REXLOG_WARN("native renderer: depth resolve names no known depth target (key {:X}); "
+                  "using the last one rendered with ({})",
+                  key, found ? fmt::format("{}x{}", found->width, found->height) : "none");
+    }
+  }
+  if (!found) {
     return;
   }
-  RenderTarget& depth = *it->second;
+  RenderTarget& depth = *found;
   const textures::ResolveTarget target = textures::GetResolveTarget(fetch, false);
   if (!target.image || target.format != VK_FORMAT_R32_SFLOAT) {
     return;

@@ -577,8 +577,10 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   if (t.info.format == VK_FORMAT_UNDEFINED) {
     binding.sampler_index = SamplerIndex(fetch);
     if (g.unsupported_logged++ < 16) {
-      REXLOG_WARN("native renderer: texture format {} not supported yet",
-                  uint32_t(fetch.format));
+      // 24_8 textures exist only as depth resolve targets; one that is not
+      // means the resolve that should have written it found no depth target.
+      REXLOG_WARN("native renderer: texture format {} at {:08X} not supported yet",
+                  uint32_t(fetch.format), base_address);
     }
     return binding;
   }
