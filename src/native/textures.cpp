@@ -1,6 +1,7 @@
 #include "native/textures.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -165,6 +166,9 @@ struct State {
   bool defaults_ready = false;
   uint32_t unsupported_logged = 0;
   uint32_t scale = 1;
+  uint64_t upload_count = 0;
+  uint64_t upload_bytes = 0;
+  uint64_t upload_ns = 0;  // checks and uploads, hashing included
 } g;
 
 // Guest textures unused this many frames are destroyed (reloaded if needed).
@@ -658,7 +662,15 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
           texture.dirty_streak = 0;
         }
       }
-      UploadTexture(texture, t, upload_cb, watch && frame >= texture.dynamic_until);
+      const auto start = std::chrono::steady_clock::now();
+      if (UploadTexture(texture, t, upload_cb, watch && frame >= texture.dynamic_until)) {
+        ++g.upload_count;
+        g.upload_bytes += uint64_t(t.width) * t.height * t.layers
+                          << t.info.bytes_per_block_log2 >> (t.info.block_size == 4 ? 4 : 0);
+      }
+      g.upload_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now() - start)
+                                  .count());
     }
   }
   if (!texture.uploaded) {
@@ -764,6 +776,13 @@ void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t widt
       std::memcpy(dest + size_t(y) * linear_row_bytes, row.data(), row.size());
     }
   }
+}
+
+void TakeUploadStats(uint64_t& count, uint64_t& bytes, uint64_t& ns) {
+  count = g.upload_count;
+  bytes = g.upload_bytes;
+  ns = g.upload_ns;
+  g.upload_count = g.upload_bytes = g.upload_ns = 0;
 }
 
 void EvictUnused(uint64_t frame) {

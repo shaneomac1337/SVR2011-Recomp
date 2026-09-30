@@ -51,9 +51,15 @@ namespace pipelines {
 // dropped.
 void Initialize(uint64_t shader_cache_id);
 
-// The pipeline for a key, created on first use (VK_NULL_HANDLE on failure).
-// Render thread.
-VkPipeline Get(const PipelineKey& key);
+// The pipeline for a key. A new one is compiled here when wait is set (or
+// async compiling is off); otherwise it is queued for the workers and Get
+// returns VK_NULL_HANDLE with pending set until it is ready. VK_NULL_HANDLE
+// without pending means creation failed. Render thread.
+VkPipeline Get(const PipelineKey& key, bool wait, bool& pending);
+
+// Pipelines the render thread compiled itself since the last call, and the
+// time it spent on them.
+void TakeSyncStats(uint64_t& count, uint64_t& ns);
 
 size_t Count();
 
@@ -61,7 +67,10 @@ size_t Count();
 // the last save.
 void Save();
 
-// Stops the prebuild thread (before the device goes away) and saves.
+// Has a worker thread Save, off the render thread.
+void RequestSave();
+
+// Stops the worker threads (before the device goes away) and saves.
 void Shutdown();
 
 }  // namespace pipelines

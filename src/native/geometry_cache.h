@@ -34,6 +34,9 @@ struct Indices {
 bool IndexBuffer(uint32_t physical_address, uint32_t count, bool index32, bool quads,
                  VkCommandBuffer upload_cb, Indices& out);
 
+// Bytes converted into the arena since the last call.
+uint64_t TakeUploadBytes();
+
 // Makes this frame's arena copies visible to vertex input; recorded at the
 // end of the upload command buffer.
 void EndFrame(VkCommandBuffer upload_cb);

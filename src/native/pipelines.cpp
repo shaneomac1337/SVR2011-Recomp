@@ -1,7 +1,11 @@
 #include "native/pipelines.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -23,6 +27,9 @@
 REXCVAR_DEFINE_BOOL(svr_native_pipeline_cache, true, "SVR2011",
                     "Native renderer: keep pipelines in cache/native-pipelines and rebuild them "
                     "in the background at startup");
+REXCVAR_DEFINE_BOOL(svr_native_async_pipelines, true, "SVR2011",
+                    "Native renderer: compile new pipelines on worker threads; main-scene "
+                    "draws wait (are skipped) a frame or two instead of stalling the game");
 REXCVAR_DECLARE(bool, svr_native_debug_no_blend);
 
 namespace svr::native::pipelines {
@@ -65,7 +72,17 @@ struct State {
   VkPipelineCache cache = VK_NULL_HANDLE;
   uint64_t shader_cache_id = 0;
   std::atomic<uint32_t> errors_logged{0};
-  std::jthread prebuild;
+  // Workers compile queued keys: stored ones at startup, then new ones asked
+  // for with Get(key, false). queued holds keys queued or being compiled.
+  std::condition_variable_any work_ready;
+  std::deque<PipelineKey> queue;
+  std::unordered_map<PipelineKey, bool, KeyHash, KeyEqual> queued;
+  std::vector<std::jthread> workers;
+  size_t prebuild_left = 0;
+  bool save_requested = false;
+  // Render thread: time spent creating pipelines it had to wait for.
+  uint64_t sync_count = 0;
+  uint64_t sync_ns = 0;
 } g;
 
 std::vector<uint8_t> ReadFile(const char* path) {
@@ -305,6 +322,46 @@ VkPipeline Insert(const PipelineKey& key, VkPipeline pipeline) {
   return pipeline;
 }
 
+void Work(std::stop_token stop) {
+  for (;;) {
+    PipelineKey key;
+    {
+      std::unique_lock lock(g.mutex);
+      g.work_ready.wait(lock, stop, [] { return !g.queue.empty() || g.save_requested; });
+      if (stop.stop_requested()) {
+        return;
+      }
+      if (g.save_requested) {
+        g.save_requested = false;
+        lock.unlock();
+        Save();
+        continue;
+      }
+      key = g.queue.front();
+      g.queue.pop_front();
+      if (g.pipelines.count(key)) {
+        g.queued.erase(key);
+        continue;
+      }
+    }
+    const VkPipeline pipeline = Create(key);
+    Insert(key, pipeline);
+    std::lock_guard lock(g.mutex);
+    g.queued.erase(key);
+    if (g.prebuild_left && !--g.prebuild_left) {
+      REXLOG_INFO("native renderer: stored pipelines prebuilt ({} in total)", g.pipelines.size());
+    }
+  }
+}
+
+// Caller holds g.mutex.
+void EnqueueLocked(const PipelineKey& key) {
+  if (g.queued.emplace(key, true).second) {
+    g.queue.push_back(key);
+    g.work_ready.notify_one();
+  }
+}
+
 std::vector<PipelineKey> LoadKeys() {
   const std::vector<uint8_t> data = ReadFile(kKeysFile);
   KeysHeader header;
@@ -328,6 +385,12 @@ std::vector<PipelineKey> LoadKeys() {
 
 void Initialize(uint64_t shader_cache_id) {
   g.shader_cache_id = shader_cache_id;
+  // A few workers: pipeline compiles run long on some drivers, and the game's
+  // own threads need the rest of the cores.
+  const uint32_t workers = std::clamp(std::thread::hardware_concurrency() / 4, 2u, 4u);
+  for (uint32_t i = 0; i < workers; ++i) {
+    g.workers.emplace_back(Work);
+  }
   if (!REXCVAR_GET(svr_native_pipeline_cache)) {
     return;
   }
@@ -351,34 +414,43 @@ void Initialize(uint64_t shader_cache_id) {
   if (keys.empty()) {
     return;
   }
-  REXLOG_INFO("native renderer: prebuilding {} stored pipelines", keys.size());
-  g.prebuild = std::jthread([keys = std::move(keys)](std::stop_token stop) {
-    size_t built = 0;
-    for (const PipelineKey& key : keys) {
-      if (stop.stop_requested()) {
-        return;
-      }
-      {
-        std::lock_guard lock(g.mutex);
-        if (g.pipelines.count(key)) {
-          continue;
-        }
-      }
-      built += Insert(key, Create(key)) != VK_NULL_HANDLE;
-    }
-    REXLOG_INFO("native renderer: prebuilt {} of {} stored pipelines", built, keys.size());
-  });
+  REXLOG_INFO("native renderer: prebuilding {} stored pipelines on {} threads", keys.size(),
+              workers);
+  std::lock_guard lock(g.mutex);
+  g.prebuild_left = keys.size();
+  for (const PipelineKey& key : keys) {
+    EnqueueLocked(key);
+  }
 }
 
-VkPipeline Get(const PipelineKey& key) {
+VkPipeline Get(const PipelineKey& key, bool wait, bool& pending) {
+  pending = false;
   {
     std::lock_guard lock(g.mutex);
     const auto it = g.pipelines.find(key);
     if (it != g.pipelines.end()) {
       return it->second;
     }
+    if (!wait && REXCVAR_GET(svr_native_async_pipelines) && !g.workers.empty()) {
+      EnqueueLocked(key);
+      pending = true;
+      return VK_NULL_HANDLE;
+    }
   }
-  return Insert(key, Create(key));
+  // Compiled here even if a worker has it queued; Insert keeps one.
+  const auto start = std::chrono::steady_clock::now();
+  const VkPipeline pipeline = Insert(key, Create(key));
+  g.sync_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count());
+  ++g.sync_count;
+  return pipeline;
+}
+
+void TakeSyncStats(uint64_t& count, uint64_t& ns) {
+  count = g.sync_count;
+  ns = g.sync_ns;
+  g.sync_count = g.sync_ns = 0;
 }
 
 size_t Count() {
@@ -426,11 +498,22 @@ void Save() {
               ok ? "saved" : "could not save", keys.size(), data.size() / 1024);
 }
 
-void Shutdown() {
-  if (g.prebuild.joinable()) {
-    g.prebuild.request_stop();
-    g.prebuild.join();
+void RequestSave() {
+  if (g.workers.empty()) {
+    Save();
+    return;
   }
+  std::lock_guard lock(g.mutex);
+  g.save_requested = true;
+  g.work_ready.notify_one();
+}
+
+void Shutdown() {
+  for (std::jthread& worker : g.workers) {
+    worker.request_stop();
+  }
+  g.work_ready.notify_all();
+  g.workers.clear();  // joins
   Save();
 }
 

@@ -1,6 +1,7 @@
 #include "native/native_renderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -256,6 +257,7 @@ struct Stats {
   uint64_t other = 0;
   uint64_t clears = 0;
   uint64_t resolves = 0;
+  uint64_t pipeline_pending = 0;  // skipped while their pipeline compiles
 };
 
 struct State {
@@ -319,6 +321,12 @@ struct State {
   std::vector<RenderTarget*> render_target_order;
   std::vector<uint8_t> readback_scratch;
   Stats stats;
+  // What the current frame spent its time on, logged when it runs long.
+  struct Hitch {
+    std::chrono::steady_clock::time_point last_present;
+    uint64_t pending = 0;
+    uint32_t render_targets = 0;
+  } hitch;
 } g;
 
 int64_t g_trace_frame = -1;
@@ -613,6 +621,7 @@ RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t guest_widt
   target->is_depth = is_depth;
   slot = std::move(target);
   g.render_target_order.push_back(slot.get());
+  ++g.hitch.render_targets;
   REXLOG_INFO("native renderer: {} render target {}x{} format {} (key {:X})",
               is_depth ? "depth" : "colour", width, height, uint32_t(format), key);
   return slot.get();
@@ -1169,9 +1178,16 @@ const VertexLayout* PrepareDraw(const uint8_t* base, const uint8_t* d3d,
   key.dummy_locations = layout.dummy_locations;
   key.attribute_count = layout.attribute_count;
   std::memcpy(key.attributes, layout.attributes, sizeof(key.attributes));
-  const VkPipeline pipeline = pipelines::Get(key);
+  // Draws into the main scene skip a frame or two while a new pipeline
+  // compiles on the workers; off-screen targets (shadow maps, attire bakes)
+  // may be drawn only once, so they wait for it.
+  const bool main_scene = g.active_color->guest_width * g.scale == g.width &&
+                          g.active_color->guest_height * g.scale == g.height;
+  bool pending;
+  const VkPipeline pipeline = pipelines::Get(key, !main_scene, pending);
   if (!pipeline) {
-    ++g.stats.other;
+    ++(pending ? g.stats.pipeline_pending : g.stats.other);
+    g.hitch.pending += pending;
     return nullptr;
   }
 
@@ -1386,6 +1402,34 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
   }
 }
 
+namespace {
+
+// Logs frames that took much longer than a 60 Hz frame, with what the
+// renderer did in them, so stutter can be pinned on its cause.
+void LogHitch() {
+  constexpr double kHitchMs = 25.0;
+  const auto now = std::chrono::steady_clock::now();
+  const double ms =
+      std::chrono::duration<double, std::milli>(now - g.hitch.last_present).count();
+  g.hitch.last_present = now;
+  uint64_t pipelines_compiled, pipeline_ns, textures, texture_bytes, texture_ns;
+  pipelines::TakeSyncStats(pipelines_compiled, pipeline_ns);
+  textures::TakeUploadStats(textures, texture_bytes, texture_ns);
+  const uint64_t geometry_bytes = geometry::TakeUploadBytes();
+  if (g.frame > 60 && ms > kHitchMs) {
+    REXLOG_INFO("native renderer: hitch at frame {}: {:.1f} ms; pipelines compiled on this "
+                "thread {} ({:.1f} ms), draws waiting for pipelines {}, textures {} "
+                "({:.2f} MB, {:.1f} ms), geometry {:.2f} MB, new render targets {}",
+                g.frame, ms, pipelines_compiled, pipeline_ns / 1e6, g.hitch.pending, textures,
+                texture_bytes / 1048576.0, texture_ns / 1e6, geometry_bytes / 1048576.0,
+                g.hitch.render_targets);
+  }
+  g.hitch.pending = 0;
+  g.hitch.render_targets = 0;
+}
+
+}  // namespace
+
 void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   if (!g.device) {
     return;
@@ -1400,10 +1444,10 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
     const Stats& s = g.stats;
     REXLOG_INFO("native renderer: frame {}: drawn={} no_shader={} no_declaration={} "
                 "unsupported_primitive={} drawn_indexed={} bad_stream={} other={} clears={} resolves={} "
-                "pipelines={} render_targets={} readbacks={}",
+                "pipelines={} waiting_for_pipeline={} render_targets={} readbacks={}",
                 g.frame, s.drawn, s.no_shader, s.no_declaration, s.unsupported_primitive,
                 s.drawn_indexed, s.bad_stream, s.other, s.clears, s.resolves, pipelines::Count(),
-                g.render_targets.size(), g.readbacks_delivered);
+                s.pipeline_pending, g.render_targets.size(), g.readbacks_delivered);
     g.stats = {};
   }
 
@@ -1476,10 +1520,11 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   frame.height = g.height;
   frame.sequence = g.frame;
   rex::system::external_frame::Publish(frame);
+  LogHitch();
   ++g.frame;
   PollTraceRequest();
   if (g.frame % 600 == 0) {
-    pipelines::Save();
+    pipelines::RequestSave();
   }
 }
 

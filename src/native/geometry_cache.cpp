@@ -1,6 +1,7 @@
 #include "native/geometry_cache.h"
 
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -48,6 +49,7 @@ struct State {
   VkDeviceSize arena_used = 0;
   uint32_t generation = 0;
   bool copied = false;
+  uint64_t uploaded_bytes = 0;
   uint64_t pruned_frame = 0;
   std::unordered_map<uint64_t, Entry> vertices;
   std::unordered_map<uint64_t, Entry> indices;
@@ -134,6 +136,7 @@ uint8_t* Place(Entry& entry, uint32_t physical, uint32_t guest_bytes, VkDeviceSi
   }
   const VkBufferCopy copy = {staging.offset, offset, host_bytes};
   g_vk.dfn->vkCmdCopyBuffer(upload_cb, staging.buffer, g.arena, 1, &copy);
+  g.uploaded_bytes += host_bytes;
   g.copied = true;
   entry.offset = offset;
   entry.watch_token = watch_token;
@@ -204,6 +207,8 @@ bool IndexBuffer(uint32_t physical_address, uint32_t count, bool index32, bool q
   out.max_index = entry.max_index;
   return out.count != 0;
 }
+
+uint64_t TakeUploadBytes() { return std::exchange(g.uploaded_bytes, 0); }
 
 void EndFrame(VkCommandBuffer upload_cb) {
   if (!g.copied) {

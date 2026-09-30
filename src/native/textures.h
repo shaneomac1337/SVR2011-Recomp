@@ -42,6 +42,9 @@ struct ResolveTarget {
 };
 ResolveTarget GetResolveTarget(const FetchConstant& fetch, bool red_blue_swapped);
 
+// Textures uploaded since the last call: count, bytes and CPU time.
+void TakeUploadStats(uint64_t& count, uint64_t& bytes, uint64_t& ns);
+
 // Destroys guest-memory textures no draw has used for a while, so memory does
 // not grow with every arena and attire the session loads.
 void EvictUnused(uint64_t frame);
