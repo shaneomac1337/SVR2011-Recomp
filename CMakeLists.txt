@@ -11,11 +11,13 @@ include(generated/rexglue.cmake)
 set(SVR2011_SOURCES
     src/main.cpp
     src/d3d_census.cpp
+    src/native/geometry_cache.cpp
     src/native/native_renderer.cpp
     src/native/shader_library.cpp
     src/native/texture_layout.cpp
     src/native/textures.cpp
     src/native/vk_context.cpp
+    src/native/write_watch.cpp
 )
 
 # Native renderer shaders: converted locally from the player's game by
@@ -85,7 +87,9 @@ if(SVR_BUILD_TESTS AND REXSDK_DIR)
     add_executable(svr2011_native_tests
         tests/native/test_guest_decode.cpp
         tests/native/test_texture_layout.cpp
+        tests/native/test_write_watch.cpp
         src/native/texture_layout.cpp
+        src/native/write_watch.cpp
         ${REXSDK_DIR}/src/graphics/pipeline/texture/util.cpp
         ${REXSDK_DIR}/thirdparty/catch2/extras/catch_amalgamated.cpp)
     target_include_directories(svr2011_native_tests PRIVATE src

@@ -18,10 +18,12 @@
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/vulkan/util.h>
 
+#include "native/geometry_cache.h"
 #include "native/guest_decode.h"
 #include "native/shader_library.h"
 #include "native/textures.h"
 #include "native/vk_context.h"
+#include "native/write_watch.h"
 
 REXCVAR_DEFINE_BOOL(svr_native_renderer, false, "SVR2011",
                     "Draw with the native Vulkan renderer instead of Xenos emulation "
@@ -45,6 +47,9 @@ REXCVAR_DEFINE_UINT64(svr_native_trace_ps, 0, "SVR2011",
 REXCVAR_DEFINE_BOOL(svr_native_half_pixel_offset, true, "SVR2011",
                     "Native renderer: shift geometry by half a pixel for D3D9-style pixel "
                     "centres, like the emulated path's half_pixel_offset");
+REXCVAR_DEFINE_BOOL(svr_native_reuse_constants, true, "SVR2011",
+                    "Native renderer: upload shader constants only when they differ from the "
+                    "previous draw's");
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -330,6 +335,17 @@ struct State {
   uint32_t height = 720;
   uint64_t frame = 0;
   bool recording = false;
+  // Blocks of this frame's upload ring that later draws reuse while their
+  // contents do not change (reset with the ring each frame).
+  struct ReusedBlock {
+    uint8_t last[4096];
+    VkDeviceAddress address = 0;
+  };
+  ReusedBlock vertex_constants, pixel_constants;
+  SharedConstants last_shared = {};
+  VkDeviceAddress shared_address = 0;
+  PushConstants last_push = {};
+  Upload zeros;
   FrameSlot* slot = nullptr;
 
   std::unordered_map<uint64_t, std::unique_ptr<RenderTarget>> render_targets;
@@ -366,7 +382,6 @@ struct State {
   VkDeviceSize depth_staging_size = 0;
   uint64_t readbacks_delivered = 0;
   std::vector<RenderTarget*> render_target_order;
-  std::vector<uint32_t> index_scratch;
   Stats stats;
   uint32_t errors_logged = 0;
 } g;
@@ -570,6 +585,9 @@ void BeginFrameIfNeeded() {
   dfn.vkBeginCommandBuffer(slot.upload_cb, &begin_info);
   dfn.vkBeginCommandBuffer(slot.main_cb, &begin_info);
   BeginUploadFrame(slot_index);
+  g.vertex_constants.address = g.pixel_constants.address = g.shared_address = 0;
+  g.last_push = {};
+  g.zeros = {};
   BindDescriptorHeaps(slot.main_cb);
   g.slot = &slot;
   g.recording = true;
@@ -915,15 +933,34 @@ void SetDynamicState(const uint8_t* d3d, VkCommandBuffer cb) {
 }
 
 // Vertex, pixel and shared constants for a draw; false if the ring is full.
-bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstants& push) {
-  const Upload upload = AllocateUpload(4096 * 2 + sizeof(SharedConstants), 16);
+// 256 float4 constants (big-endian in the device), converted into the upload
+// ring unless the previous draw's block holds the same values.
+bool UploadConstantBlock(State::ReusedBlock& block, const uint8_t* big_endian,
+                         VkDeviceAddress& address) {
+  if (block.address && REXCVAR_GET(svr_native_reuse_constants) &&
+      std::memcmp(block.last, big_endian, sizeof(block.last)) == 0) {
+    address = block.address;
+    return true;
+  }
+  const Upload upload = AllocateUpload(sizeof(block.last), 16);
   if (!upload.data) {
     return false;
   }
-  SwapCopy32(reinterpret_cast<uint32_t*>(upload.data), d3d + kDeviceVertexConstants, 1024);
-  SwapCopy32(reinterpret_cast<uint32_t*>(upload.data + 4096), d3d + kDevicePixelConstants, 1024);
-  auto* shared = reinterpret_cast<SharedConstants*>(upload.data + 8192);
-  std::memset(shared, 0, sizeof(*shared));
+  SwapCopy32(reinterpret_cast<uint32_t*>(upload.data), big_endian, sizeof(block.last) / 4);
+  std::memcpy(block.last, big_endian, sizeof(block.last));
+  block.address = address = upload.address;
+  return true;
+}
+
+bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstants& push) {
+  if (!UploadConstantBlock(g.vertex_constants, d3d + kDeviceVertexConstants,
+                           push.vertex_constants) ||
+      !UploadConstantBlock(g.pixel_constants, d3d + kDevicePixelConstants,
+                           push.pixel_constants)) {
+    return false;
+  }
+  SharedConstants shared_values = {};
+  SharedConstants* shared = &shared_values;
   for (uint32_t slot = 0; slot < kFetchSlots; ++slot) {
     const uint8_t* fetch_data = d3d + kDeviceFetchConstants + slot * 24;
     if ((LoadBE32(fetch_data) & 3) != 2 ||
@@ -955,9 +992,18 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstan
     shared->half_pixel_offset[0] = x_scale != 0.0f ? 0.5f / x_scale : 0.0f;
     shared->half_pixel_offset[1] = y_scale != 0.0f ? 0.5f / y_scale : 0.0f;
   }
-  push.vertex_constants = upload.address;
-  push.pixel_constants = upload.address + 4096;
-  push.shared_constants = upload.address + 8192;
+  if (g.shared_address && REXCVAR_GET(svr_native_reuse_constants) &&
+      std::memcmp(&g.last_shared, shared, sizeof(*shared)) == 0) {
+    push.shared_constants = g.shared_address;
+    return true;
+  }
+  const Upload upload = AllocateUpload(sizeof(SharedConstants), 16);
+  if (!upload.data) {
+    return false;
+  }
+  std::memcpy(upload.data, shared, sizeof(*shared));
+  g.last_shared = *shared;
+  g.shared_address = push.shared_constants = upload.address;
   return true;
 }
 
@@ -975,6 +1021,7 @@ void Configure(rex::Runtime* runtime) {
   g.device = provider ? provider->vulkan_device() : nullptr;
   bool ok = g.device && InitializeContext(g.device, runtime->memory()) &&
             CreateUploadRings(kFramesInFlight, kUploadRingSize) && textures::Initialize() &&
+            geometry::Initialize() && write_watch::Initialize(runtime->memory()) &&
             shader_library::Initialize(g.device);
   for (FrameSlot& slot : g.slots) {
     ok = ok && CreateFrameSlot(slot);
@@ -1300,17 +1347,22 @@ const VertexLayout* PrepareDraw(const uint8_t* base, const uint8_t* d3d,
     g.bound_pipeline = pipeline;
   }
   SetDynamicState(d3d, cb);
-  dfn.vkCmdPushConstants(cb, g_vk.pipeline_layout,
-                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                         sizeof(push), &push);
+  if (std::memcmp(&push, &g.last_push, sizeof(push)) != 0) {
+    dfn.vkCmdPushConstants(cb, g_vk.pipeline_layout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(push), &push);
+    g.last_push = push;
+  }
   if (layout.dummy_locations) {
-    // Zeros for shader inputs the declaration does not feed.
-    const Upload zeros = AllocateUpload(64, 16);
-    if (!zeros.data) {
-      return nullptr;
+    // Zeros for shader inputs the declaration does not feed, once per frame.
+    if (!g.zeros.data) {
+      g.zeros = AllocateUpload(64, 16);
+      if (!g.zeros.data) {
+        return nullptr;
+      }
+      std::memset(g.zeros.data, 0, 64);
     }
-    std::memset(zeros.data, 0, 64);
-    dfn.vkCmdBindVertexBuffers(cb, kDummyBinding, 1, &zeros.buffer, &zeros.offset);
+    dfn.vkCmdBindVertexBuffers(cb, kDummyBinding, 1, &g.zeros.buffer, &g.zeros.offset);
   }
   return &layout;
 }
@@ -1402,15 +1454,12 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
   const bool index32 = (LoadBE32(base + index_buffer) & 0x80000000) != 0;
   const uint32_t index_address = (LoadBE32(base + index_buffer + 0x18) & ~3u) +
                                  start_index * (index32 ? 4 : 2);
-  const uint8_t* index_data = TranslatePhysical(ToPhysical(index_address));
-
-  std::vector<uint32_t>& indices = g.index_scratch;
-  indices.resize(index_count);
-  const IndexRange range = ScanIndices(index_data, index_count, index32, indices.data());
-  if (range.empty()) {
+  geometry::Indices indices;
+  if (!geometry::IndexBuffer(ToPhysical(index_address), index_count, index32, quads,
+                             g.slot->upload_cb, indices)) {
     return;
   }
-  const uint32_t min_index = range.min, max_index = range.max;
+  const uint32_t min_index = indices.min_index, max_index = indices.max_index;
 
   uint32_t strides[kMaxStreams];
   std::memcpy(strides, g.stream_strides, sizeof(strides));
@@ -1428,9 +1477,14 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
     }
     const uint32_t fetch = LoadBE32(d3d + kDeviceStreamFetch - 8 * stream);
     const uint32_t stride = strides[stream];
+    geometry::Region vertices;
     const bool ok = (fetch & 3) == 3 && stride &&
-                    UploadVertices(TranslatePhysical(fetch & ~3u) + size_t(first_vertex) * stride,
-                                   vertex_count * stride, stream);
+                    geometry::Vertices((fetch & ~3u) + first_vertex * stride,
+                                       vertex_count * stride, g.slot->upload_cb, vertices);
+    if (ok) {
+      g_vk.dfn->vkCmdBindVertexBuffers(g.slot->main_cb, stream, 1, &vertices.buffer,
+                                       &vertices.offset);
+    }
     if (!ok) {
       ++g.stats.bad_stream;
       static uint32_t logged = 0;
@@ -1439,30 +1493,21 @@ void OnDrawIndexed(const uint8_t* base, uint32_t device, uint32_t primitive,
                     "indices {}..{} base_vertex={} count={} index32={}",
                     stream, fetch, LoadBE32(d3d + kDeviceStreamFetch - 8 * stream + 4), stride,
                     min_index, max_index, base_vertex, index_count, index32);
-        std::string ib, data;
+        std::string ib;
         for (uint32_t i = 0; i < 32; i += 4) {
           ib += fmt::format(" {:08X}", LoadBE32(base + index_buffer + i));
-          data += fmt::format(" {:08X}", LoadBE32(index_data + i));
         }
-        REXLOG_WARN("native renderer:   index buffer {:08X}:{} start={} data:{}", index_buffer,
-                    ib, start_index, data);
+        REXLOG_WARN("native renderer:   index buffer {:08X}:{} start={}", index_buffer, ib,
+                    start_index);
       }
       return;
     }
   }
-  // Indices rebased to the first uploaded vertex; quads become triangles.
-  uint32_t draw_count = quads ? index_count / 4 * 6 : index_count;
-  const Upload index_upload = AllocateUpload(size_t(draw_count) * sizeof(uint32_t), 16);
-  if (!index_upload.data) {
-    ++g.stats.other;
-    return;
-  }
-  RebaseIndices(indices.data(), index_count, index32, quads, min_index,
-                reinterpret_cast<uint32_t*>(index_upload.data));
   const VkCommandBuffer cb = g.slot->main_cb;
   const auto& dfn = *g_vk.dfn;
-  dfn.vkCmdBindIndexBuffer(cb, index_upload.buffer, index_upload.offset, VK_INDEX_TYPE_UINT32);
-  dfn.vkCmdDrawIndexed(cb, draw_count, 1, 0, 0, 0);
+  dfn.vkCmdBindIndexBuffer(cb, indices.region.buffer, indices.region.offset,
+                           VK_INDEX_TYPE_UINT32);
+  dfn.vkCmdDrawIndexed(cb, indices.count, 1, 0, 0, 0);
   ++g.stats.drawn_indexed;
   TRACE("draw indexed prim {} indices {} blend {:08X} depthctl {:08X}", primitive, index_count,
         ReadReg(d3d, RB_BLENDCONTROL0), ReadReg(d3d, RB_DEPTHCONTROL));
@@ -1564,6 +1609,7 @@ void OnPresent(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
   // barrier's second scope.
   ImageBarrier(cb, slot.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  geometry::EndFrame(slot.upload_cb);
   dfn.vkEndCommandBuffer(slot.upload_cb);
   dfn.vkEndCommandBuffer(slot.main_cb);
 

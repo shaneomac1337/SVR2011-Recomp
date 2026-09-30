@@ -20,10 +20,14 @@
 #include "native/guest_decode.h"
 #include "native/texture_layout.h"
 #include "native/vk_context.h"
+#include "native/write_watch.h"
 
 REXCVAR_DEFINE_INT32(svr_native_anisotropy, 3, "SVR2011",
                      "Native renderer: anisotropic filtering for linear, mipmapped textures, as "
                      "anisotropic_override (-1 = the game's setting, 0 = off, 1..5 = 1x..16x)");
+REXCVAR_DEFINE_BOOL(svr_native_texture_write_watch, true, "SVR2011",
+                    "Native renderer: skip re-checking textures whose guest memory was not "
+                    "written since the last upload (off: hash every texture every frame)");
 REXCVAR_DEFINE_UINT32(svr_native_dump_texture, 0, "SVR2011",
                       "Native renderer debugging: write the texture at this physical address "
                       "to native_texture_<address>.dds when it is uploaded");
@@ -133,8 +137,16 @@ struct Texture {
   };
   std::unordered_map<uint32_t, View> views;
   uint64_t content_hash = 0;
+  // Guest memory the upload read: base level and mips (physical, bytes).
+  uint32_t base_range[2] = {};
+  uint32_t mips_range[2] = {};
   uint64_t checked_frame = UINT64_MAX;
   uint64_t last_used = 0;
+  // Written in consecutive frames: not watched (hashed every frame) until
+  // dynamic_until, so its writes cost no page faults.
+  uint64_t dirty_frame = UINT64_MAX;
+  uint32_t dirty_streak = 0;
+  uint64_t dynamic_until = 0;
   bool uploaded = false;
   bool is_resolve_target = false;
   bool red_blue_swapped = false;
@@ -153,6 +165,8 @@ struct State {
 
 // Guest textures unused this many frames are destroyed (reloaded if needed).
 constexpr uint64_t kEvictAfterFrames = 1800;
+constexpr uint32_t kDynamicStreak = 3;
+constexpr uint64_t kDynamicFrames = 600;
 
 // Destroys the texture's image, memory and views once frames in flight are
 // done with them, and frees its bindless slots.
@@ -382,7 +396,7 @@ struct GuestTexture {
 
 // Uploads every level from guest memory; false when the data is unchanged
 // since the last upload.
-bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb) {
+bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb, bool watch) {
   const xenos::xe_gpu_texture_fetch_t& fetch = t.fetch;
   const uint32_t block = t.info.block_size;
   const uint32_t bpb_log2 = t.info.bytes_per_block_log2;
@@ -392,6 +406,15 @@ bool UploadTexture(Texture& texture, const GuestTexture& t, VkCommandBuffer cb) 
       fetch.format, fetch.packed_mips, t.base_page != 0, t.max_level);
   const uint8_t* base = t.base_page ? TranslatePhysical(t.base_page << 12) : nullptr;
   const uint8_t* mips = t.mip_page ? TranslatePhysical(t.mip_page << 12) : nullptr;
+  texture.base_range[0] = t.base_page << 12;
+  texture.base_range[1] = base ? layout.base.level_data_extent_bytes : 0;
+  texture.mips_range[0] = t.mip_page << 12;
+  texture.mips_range[1] = mips && t.max_level ? layout.mips_total_extent_bytes : 0;
+  if (watch) {
+    // Before reading: a write after this makes the texture dirty again.
+    write_watch::Watch(texture.base_range[0], texture.base_range[1]);
+    write_watch::Watch(texture.mips_range[0], texture.mips_range[1]);
+  }
   uint64_t hash = 0;
   if (base) {
     hash = XXH3_64bits(base, layout.base.level_data_extent_bytes);
@@ -595,7 +618,25 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   texture.last_used = frame;
   if (texture.checked_frame != frame) {
     texture.checked_frame = frame;
-    UploadTexture(texture, t, upload_cb);
+    const bool watch =
+        REXCVAR_GET(svr_native_texture_write_watch) && frame >= texture.dynamic_until;
+    const bool clean =
+        watch && texture.uploaded &&
+        (!texture.base_range[1] ||
+         !write_watch::IsDirty(texture.base_range[0], texture.base_range[1])) &&
+        (!texture.mips_range[1] ||
+         !write_watch::IsDirty(texture.mips_range[0], texture.mips_range[1]));
+    if (!clean) {
+      if (watch && texture.uploaded) {
+        texture.dirty_streak = texture.dirty_frame + 1 == frame ? texture.dirty_streak + 1 : 1;
+        texture.dirty_frame = frame;
+        if (texture.dirty_streak >= kDynamicStreak) {
+          texture.dynamic_until = frame + kDynamicFrames;
+          texture.dirty_streak = 0;
+        }
+      }
+      UploadTexture(texture, t, upload_cb, watch && frame >= texture.dynamic_until);
+    }
   }
   if (!texture.uploaded) {
     return binding;
