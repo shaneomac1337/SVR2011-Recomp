@@ -67,6 +67,8 @@ struct Context {
   PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress = nullptr;
   PFN_vkCmdBlitImage vkCmdBlitImage = nullptr;
   PFN_vkCmdClearDepthStencilImage vkCmdClearDepthStencilImage = nullptr;
+  PFN_vkCreatePipelineCache vkCreatePipelineCache = nullptr;
+  PFN_vkGetPipelineCacheData vkGetPipelineCacheData = nullptr;
 
   // The frame being recorded; resources retired now are destroyed once it
   // has completed on the GPU.

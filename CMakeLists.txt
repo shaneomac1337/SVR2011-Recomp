@@ -13,6 +13,7 @@ set(SVR2011_SOURCES
     src/d3d_census.cpp
     src/native/geometry_cache.cpp
     src/native/native_renderer.cpp
+    src/native/pipelines.cpp
     src/native/shader_library.cpp
     src/native/texture_layout.cpp
     src/native/textures.cpp

@@ -31,6 +31,7 @@ struct State {
   std::unique_ptr<NativeShader[]> shaders;  // parallel to g_shaderCacheEntries
   std::mutex mutex;
   std::unordered_map<uint32_t, uint64_t> hash_by_object;
+  uint64_t cache_id = 0;
   uint32_t unknown_hashes = 0;
 } g;
 
@@ -86,6 +87,10 @@ bool Initialize(const rex::ui::vulkan::VulkanDevice* device) {
     return false;
   }
   g.shaders = std::make_unique<NativeShader[]>(g_shaderCacheEntryCount);
+  for (size_t i = 0; i < g_shaderCacheEntryCount; ++i) {
+    g.shaders[i].hash = g_shaderCacheEntries[i].hash;
+  }
+  g.cache_id = XXH3_64bits(g_compressedSpirvCache, g_spirvCacheCompressedSize);
   g.device = device;
   REXLOG_INFO("native renderer: {} converted shaders", g_shaderCacheEntryCount);
   return true;
@@ -127,6 +132,21 @@ const NativeShader* Find(uint32_t guest_object) {
   }
   return &shader;
 }
+
+VkShaderModule Module(uint64_t hash) {
+  const ShaderCacheEntry* entry = FindEntry(hash);
+  if (!entry) {
+    return VK_NULL_HANDLE;
+  }
+  std::lock_guard lock(g.mutex);
+  NativeShader& shader = g.shaders[entry - g_shaderCacheEntries];
+  if (!shader.module && !BuildModule(*entry, shader)) {
+    return VK_NULL_HANDLE;
+  }
+  return shader.module;
+}
+
+uint64_t CacheId() { return g.cache_id; }
 
 uint64_t Hash(uint32_t guest_object) {
   std::lock_guard lock(g.mutex);

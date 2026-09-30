@@ -174,8 +174,13 @@ bool InitializeContext(const rex::ui::vulkan::VulkanDevice* device,
       reinterpret_cast<PFN_vkCmdBlitImage>(get_proc(g_vk.vk_device, "vkCmdBlitImage"));
   g_vk.vkCmdClearDepthStencilImage = reinterpret_cast<PFN_vkCmdClearDepthStencilImage>(
       get_proc(g_vk.vk_device, "vkCmdClearDepthStencilImage"));
+  g_vk.vkCreatePipelineCache = reinterpret_cast<PFN_vkCreatePipelineCache>(
+      get_proc(g_vk.vk_device, "vkCreatePipelineCache"));
+  g_vk.vkGetPipelineCacheData = reinterpret_cast<PFN_vkGetPipelineCacheData>(
+      get_proc(g_vk.vk_device, "vkGetPipelineCacheData"));
   if (!g_vk.vkGetBufferDeviceAddress || !g_vk.vkCmdBlitImage ||
-      !g_vk.vkCmdClearDepthStencilImage) {
+      !g_vk.vkCmdClearDepthStencilImage || !g_vk.vkCreatePipelineCache ||
+      !g_vk.vkGetPipelineCacheData) {
     REXLOG_ERROR("native renderer: could not load device functions missing from the SDK table");
     return false;
   }

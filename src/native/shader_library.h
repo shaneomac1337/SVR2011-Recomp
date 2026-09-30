@@ -14,6 +14,7 @@ class VulkanDevice;
 namespace svr::native {
 
 struct NativeShader {
+  uint64_t hash = 0;  // XXH3 of the container, as in the shader cache
   VkShaderModule module = VK_NULL_HANDLE;
   uint32_t spec_constants_mask = 0;
   // Texture fetch slots the shader reads (all when unknown).
@@ -36,6 +37,13 @@ const NativeShader* Find(uint32_t guest_object);
 
 // The container hash of a guest shader object (0 if unknown), for debugging.
 uint64_t Hash(uint32_t guest_object);
+
+// The module of a converted shader by container hash, built on first use;
+// VK_NULL_HANDLE if the cache has no such shader. Any thread.
+VkShaderModule Module(uint64_t hash);
+
+// Names the converted shader cache this build carries (a hash of its data).
+uint64_t CacheId();
 
 }  // namespace shader_library
 
