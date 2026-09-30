@@ -56,6 +56,34 @@ void CopyLevelFromGuest(uint8_t* dest, const uint8_t* source, uint32_t bx, uint3
   }
 }
 
+void Downsample(const uint8_t* source, uint32_t source_width, uint32_t source_height,
+                uint32_t scale, uint32_t bytes_per_pixel, bool average_bytes, uint8_t* dest) {
+  const uint32_t width = source_width / scale;
+  const uint32_t height = source_height / scale;
+  const size_t source_row = size_t(source_width) * bytes_per_pixel;
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t* block =
+          source + size_t(y) * scale * source_row + size_t(x) * scale * bytes_per_pixel;
+      uint8_t* out = dest + (size_t(y) * width + x) * bytes_per_pixel;
+      if (!average_bytes) {
+        std::memcpy(out, block, bytes_per_pixel);
+        continue;
+      }
+      for (uint32_t b = 0; b < bytes_per_pixel; ++b) {
+        uint32_t sum = 0;
+        for (uint32_t sy = 0; sy < scale; ++sy) {
+          for (uint32_t sx = 0; sx < scale; ++sx) {
+            sum += block[sy * source_row + sx * bytes_per_pixel + b];
+          }
+        }
+        const uint32_t count = scale * scale;
+        out[b] = uint8_t((sum + count / 2) / count);
+      }
+    }
+  }
+}
+
 uint32_t LinearRowBytes(uint32_t pitch_texels, uint32_t bytes_per_block_log2) {
   return ((pitch_texels << bytes_per_block_log2) + xenos::kTextureLinearRowAlignmentBytes - 1) &
          ~(xenos::kTextureLinearRowAlignmentBytes - 1);

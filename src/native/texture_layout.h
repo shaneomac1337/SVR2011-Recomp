@@ -27,6 +27,12 @@ void CopyLevelFromGuest(uint8_t* dest, const uint8_t* source, uint32_t bx, uint3
 uint32_t GuestOffset(uint32_t x, uint32_t y, uint32_t pitch_texels, uint32_t bytes_per_block_log2,
                      bool tiled, uint32_t linear_row_bytes);
 
+// Shrinks tightly packed pixels by an integer scale: each scale x scale block
+// becomes one pixel, its bytes averaged when every byte is an 8-bit unorm
+// channel (average_bytes), else the block's top-left pixel.
+void Downsample(const uint8_t* source, uint32_t source_width, uint32_t source_height,
+                uint32_t scale, uint32_t bytes_per_pixel, bool average_bytes, uint8_t* dest);
+
 // Linear guest rows are padded to kTextureLinearRowAlignmentBytes.
 uint32_t LinearRowBytes(uint32_t pitch_texels, uint32_t bytes_per_block_log2);
 

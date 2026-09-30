@@ -10,7 +10,9 @@
 
 namespace svr::native::textures {
 
-bool Initialize();
+// scale: the native resolution scale; resolve targets are that much larger
+// than their guest textures.
+bool Initialize(uint32_t scale);
 
 // A texture fetch constant as the guest stores it (six big-endian dwords).
 struct FetchConstant {
@@ -50,6 +52,10 @@ ResolveTarget FindResolveTarget(uint32_t base_address);
 // Bytes per pixel of a resolve destination's guest format, or 0 when its
 // guest layout is not written back (compressed or unknown formats).
 uint32_t GuestBytesPerPixel(const FetchConstant& fetch);
+
+// Whether every byte of the format is an 8-bit unorm channel, so scaled
+// readbacks can average bytes.
+bool BytewiseUnorm(const FetchConstant& fetch);
 
 // Writes resolved pixels (host order, tightly packed rows) into guest
 // memory in the destination's layout: tiled or linear, endian-swapped.

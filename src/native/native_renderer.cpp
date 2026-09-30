@@ -21,6 +21,7 @@
 #include "native/geometry_cache.h"
 #include "native/guest_decode.h"
 #include "native/pipelines.h"
+#include "native/texture_layout.h"
 #include "native/shader_library.h"
 #include "native/textures.h"
 #include "native/vk_context.h"
@@ -54,6 +55,11 @@ REXCVAR_DEFINE_BOOL(svr_native_reuse_constants, true, "SVR2011",
 REXCVAR_DEFINE_BOOL(svr_native_bind_used_slots, true, "SVR2011",
                     "Native renderer: bind textures only in the fetch slots the draw's shaders "
                     "read (from cache/shader-native/fetch_slots.cpp)");
+REXCVAR_DEFINE_INT32(svr_native_resolution_scale, 1, "SVR2011",
+                     "Native renderer: render at this multiple of the game's resolution (1-3), "
+                     "then let the presenter fit the frame to the window")
+    .range(1, 3)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -217,8 +223,11 @@ struct RenderTarget {
   VkDeviceMemory memory = VK_NULL_HANDLE;
   VkImageView view = VK_NULL_HANDLE;
   VkFormat format = VK_FORMAT_UNDEFINED;
+  // Host size: the guest size times the resolution scale.
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t guest_width = 0;
+  uint32_t guest_height = 0;
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
   bool is_depth = false;
 };
@@ -252,6 +261,8 @@ struct Stats {
 struct State {
   const VulkanDevice* device = nullptr;
   FrameSlot slots[kFramesInFlight];
+  // Output size: the guest front buffer times the resolution scale.
+  uint32_t scale = 1;
   uint32_t width = 1280;
   uint32_t height = 720;
   uint64_t frame = 0;
@@ -293,6 +304,7 @@ struct State {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t bytes_per_pixel = 0;
+    bool average_bytes = false;
     uint64_t frame = 0;
   };
   std::vector<PendingReadback> pending_readbacks;
@@ -302,6 +314,7 @@ struct State {
   VkDeviceSize depth_staging_size = 0;
   uint64_t readbacks_delivered = 0;
   std::vector<RenderTarget*> render_target_order;
+  std::vector<uint8_t> readback_scratch;
   Stats stats;
 } g;
 
@@ -429,7 +442,18 @@ void DeliverReadbacks() {
       range.memory = p.memory;
       range.size = VK_WHOLE_SIZE;
       dfn.vkInvalidateMappedMemoryRanges(g_vk.vk_device, 1, &range);
-      textures::WriteToGuest(p.fetch, static_cast<const uint8_t*>(mapped), p.width, p.height);
+      const auto* pixels = static_cast<const uint8_t*>(mapped);
+      if (g.scale > 1) {
+        // Scaled resolve targets go back to guest memory at guest size.
+        std::vector<uint8_t>& guest_pixels = g.readback_scratch;
+        guest_pixels.resize(size_t(p.width / g.scale) * (p.height / g.scale) * p.bytes_per_pixel);
+        texture_layout::Downsample(pixels, p.width, p.height, g.scale, p.bytes_per_pixel,
+                                   p.average_bytes, guest_pixels.data());
+        textures::WriteToGuest(p.fetch, guest_pixels.data(), p.width / g.scale,
+                               p.height / g.scale);
+      } else {
+        textures::WriteToGuest(p.fetch, pixels, p.width, p.height);
+      }
       dfn.vkUnmapMemory(g_vk.vk_device, p.memory);
     }
     dfn.vkDestroyBuffer(g_vk.vk_device, p.buffer, nullptr);
@@ -461,6 +485,7 @@ void QueueReadback(const textures::FetchConstant& fetch, const textures::Resolve
   pending.width = target.width;
   pending.height = target.height;
   pending.bytes_per_pixel = bytes_per_pixel;
+  pending.average_bytes = textures::BytewiseUnorm(fetch);
   pending.frame = g.frame;
   if (!vk_util::CreateDedicatedAllocationBuffer(
           g.device, VkDeviceSize(target.width) * target.height * bytes_per_pixel,
@@ -520,8 +545,11 @@ void EndRendering() {
   }
 }
 
-RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t width, uint32_t height,
-                              bool is_depth) {
+// width and height are the guest size.
+RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t guest_width,
+                              uint32_t guest_height, bool is_depth) {
+  const uint32_t width = guest_width * g.scale;
+  const uint32_t height = guest_height * g.scale;
   std::unique_ptr<RenderTarget>& slot = g.render_targets[key];
   if (slot && (slot->width < width || slot->height < height)) {
     // Grows in place of the old one, which frames in flight may still use.
@@ -573,6 +601,8 @@ RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t width, uin
   target->format = format;
   target->width = width;
   target->height = height;
+  target->guest_width = guest_width;
+  target->guest_height = guest_height;
   target->is_depth = is_depth;
   slot = std::move(target);
   g.render_target_order.push_back(slot.get());
@@ -611,7 +641,7 @@ bool EnsureRendering(const uint8_t* d3d, bool need_depth) {
     return false;
   }
   RenderTarget* depth =
-      need_depth ? CurrentDepthTarget(d3d, color->width, color->height) : nullptr;
+      need_depth ? CurrentDepthTarget(d3d, color->guest_width, color->guest_height) : nullptr;
   if (g.rendering && g.active_color == color && (!need_depth || g.active_depth == depth)) {
     return true;
   }
@@ -659,13 +689,14 @@ void SetDynamicState(const uint8_t* d3d, VkCommandBuffer cb) {
   const float y_offset = (vte & 8) ? ReadRegFloat(d3d, PA_CL_VPORT_YOFFSET) : 0.0f;
   const float z_scale = (vte & 16) ? ReadRegFloat(d3d, PA_CL_VPORT_ZSCALE) : 1.0f;
   const float z_offset = (vte & 32) ? ReadRegFloat(d3d, PA_CL_VPORT_ZOFFSET) : 0.0f;
+  const float scale = float(g.scale);
   // The converted vertex shaders negate y (-fvk-invert-y), so D3D's negative
   // y scale becomes a positive Vulkan viewport height.
   VkViewport viewport;
-  viewport.x = x_offset - x_scale;
-  viewport.width = 2.0f * x_scale;
-  viewport.y = y_offset + y_scale;
-  viewport.height = -2.0f * y_scale;
+  viewport.x = (x_offset - x_scale) * scale;
+  viewport.width = 2.0f * x_scale * scale;
+  viewport.y = (y_offset + y_scale) * scale;
+  viewport.height = -2.0f * y_scale * scale;
   viewport.minDepth = std::clamp(z_offset, 0.0f, 1.0f);
   viewport.maxDepth = std::clamp(z_offset + z_scale, 0.0f, 1.0f);
   if (viewport.width <= 0.0f) {
@@ -680,8 +711,9 @@ void SetDynamicState(const uint8_t* d3d, VkCommandBuffer cb) {
 
   const uint32_t tl = ReadReg(d3d, PA_SC_SCREEN_SCISSOR_TL);
   const uint32_t br = ReadReg(d3d, PA_SC_SCREEN_SCISSOR_BR);
-  int32_t left = int32_t(tl & 0x7FFF), top = int32_t((tl >> 16) & 0x7FFF);
-  int32_t right = int32_t(br & 0x7FFF), bottom = int32_t((br >> 16) & 0x7FFF);
+  const int32_t s = int32_t(g.scale);
+  int32_t left = int32_t(tl & 0x7FFF) * s, top = int32_t((tl >> 16) & 0x7FFF) * s;
+  int32_t right = int32_t(br & 0x7FFF) * s, bottom = int32_t((br >> 16) & 0x7FFF) * s;
   right = std::min<int32_t>(right, int32_t(g.active_color->width));
   bottom = std::min<int32_t>(bottom, int32_t(g.active_color->height));
   VkRect2D scissor;
@@ -795,8 +827,11 @@ void Configure(rex::Runtime* runtime) {
                        ? static_cast<rex::ui::vulkan::VulkanProvider*>(graphics_system->provider())
                        : nullptr;
   g.device = provider ? provider->vulkan_device() : nullptr;
+  g.scale = uint32_t(std::clamp(REXCVAR_GET(svr_native_resolution_scale), 1, 3));
+  g.width = 1280 * g.scale;
+  g.height = 720 * g.scale;
   bool ok = g.device && InitializeContext(g.device, runtime->memory()) &&
-            CreateUploadRings(kFramesInFlight, kUploadRingSize) && textures::Initialize() &&
+            CreateUploadRings(kFramesInFlight, kUploadRingSize) && textures::Initialize(g.scale) &&
             geometry::Initialize() && write_watch::Initialize(runtime->memory()) &&
             shader_library::Initialize(g.device);
   for (FrameSlot& slot : g.slots) {
@@ -860,10 +895,12 @@ void OnClear(const uint8_t* base, uint32_t device, uint32_t flags, const int32_t
   const RenderTarget& target = *g.active_color;
   VkClearRect clear_rect = {};
   clear_rect.layerCount = 1;
-  const int32_t right = std::min<int32_t>(rect[2], int32_t(target.width));
-  const int32_t bottom = std::min<int32_t>(rect[3], int32_t(target.height));
-  if (right > rect[0] && bottom > rect[1] && rect[0] >= 0 && rect[1] >= 0) {
-    clear_rect.rect = {{rect[0], rect[1]}, {uint32_t(right - rect[0]), uint32_t(bottom - rect[1])}};
+  const int32_t s = int32_t(g.scale);
+  const int32_t left = rect[0] * s, top = rect[1] * s;
+  const int32_t right = std::min<int32_t>(rect[2] * s, int32_t(target.width));
+  const int32_t bottom = std::min<int32_t>(rect[3] * s, int32_t(target.height));
+  if (right > left && bottom > top && left >= 0 && top >= 0) {
+    clear_rect.rect = {{left, top}, {uint32_t(right - left), uint32_t(bottom - top)}};
   } else {
     clear_rect.rect = {{0, 0}, {target.width, target.height}};
   }

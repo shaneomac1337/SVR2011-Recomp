@@ -161,6 +161,7 @@ struct State {
   Texture defaults[3];  // 2D, 3D, cube; bindless index 0 of each heap
   bool defaults_ready = false;
   uint32_t unsupported_logged = 0;
+  uint32_t scale = 1;
 } g;
 
 // Guest textures unused this many frames are destroyed (reloaded if needed).
@@ -519,7 +520,8 @@ FetchConstant LoadFetchConstant(const uint8_t* big_endian) {
   return fetch;
 }
 
-bool Initialize() {
+bool Initialize(uint32_t scale) {
+  g.scale = scale;
   const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   if (!CreateImage(g.defaults[0], VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, 0,
                    usage) ||
@@ -650,8 +652,8 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
 ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) {
   const xenos::xe_gpu_texture_fetch_t fetch = Decode(raw);
   const uint32_t base_address = ToPhysical(uint32_t(fetch.base_address) << 12);
-  const uint32_t width = fetch.size_2d.width + 1;
-  const uint32_t height = fetch.size_2d.height + 1;
+  const uint32_t width = (fetch.size_2d.width + 1) * g.scale;
+  const uint32_t height = (fetch.size_2d.height + 1) * g.scale;
   FormatInfo info = GetFormatInfo(fetch.format);
   if (fetch.format == xenos::TextureFormat::k_24_8 ||
       fetch.format == xenos::TextureFormat::k_24_8_FLOAT) {
@@ -693,6 +695,20 @@ uint32_t GuestBytesPerPixel(const FetchConstant& raw) {
   return info.format != VK_FORMAT_UNDEFINED && info.block_size == 1
              ? 1u << info.bytes_per_block_log2
              : 0;
+}
+
+bool BytewiseUnorm(const FetchConstant& raw) {
+  switch (Decode(raw).format) {
+    case xenos::TextureFormat::k_8_8_8_8:
+    case xenos::TextureFormat::k_8_8_8_8_A:
+    case xenos::TextureFormat::k_8:
+    case xenos::TextureFormat::k_8_A:
+    case xenos::TextureFormat::k_8_B:
+    case xenos::TextureFormat::k_8_8:
+      return true;
+    default:
+      return false;
+  }
 }
 
 void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t width,

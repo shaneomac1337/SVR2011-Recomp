@@ -76,3 +76,33 @@ TEST_CASE("levels read back from guest layouts") {
   RoundTrip(false, 16, 8);
   RoundTrip(true, 32, 16);
 }
+
+TEST_CASE("downsampling averages 8-bit channels per block") {
+  // 4x2 RGBA8 pixels at scale 2 -> 2x1.
+  const uint8_t source[4 * 2 * 4] = {
+      0,   0,   0,   255, 255, 255, 255, 255, 10, 20, 30, 40, 10, 20, 30, 40,
+      255, 255, 255, 255, 1,   1,   1,   1,   10, 20, 30, 40, 10, 20, 30, 42};
+  uint8_t dest[2 * 4];
+  Downsample(source, 4, 2, 2, 4, true, dest);
+  CHECK(dest[0] == 128);  // (0 + 255 + 255 + 1 + 2) / 4
+  CHECK(dest[3] == 192);  // (255 * 3 + 1 + 2) / 4
+  CHECK(dest[4] == 10);
+  CHECK(dest[7] == 41);   // (40 * 3 + 42 + 2) / 4 = 41
+  // Other formats keep the block's top-left pixel.
+  Downsample(source, 4, 2, 2, 4, false, dest);
+  CHECK(std::memcmp(dest, source, 4) == 0);
+  CHECK(std::memcmp(dest + 4, source + 8, 4) == 0);
+}
+
+TEST_CASE("downsampling by 3 and by 1") {
+  uint8_t source[3 * 3];
+  for (int i = 0; i < 9; ++i) {
+    source[i] = uint8_t(i * 10);
+  }
+  uint8_t dest[1];
+  Downsample(source, 3, 3, 3, 1, true, dest);
+  CHECK(dest[0] == 40);
+  uint8_t copy[9];
+  Downsample(source, 3, 3, 1, 1, true, copy);
+  CHECK(std::memcmp(copy, source, 9) == 0);
+}
