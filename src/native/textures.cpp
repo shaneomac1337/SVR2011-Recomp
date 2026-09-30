@@ -883,6 +883,18 @@ uint32_t GuestBytesPerPixel(const FetchConstant& raw) {
              : 0;
 }
 
+bool ResolvesRedBlueSwapped(const FetchConstant& raw) {
+  const xenos::xe_gpu_texture_fetch_t fetch = Decode(raw);
+  switch (fetch.format) {
+    case xenos::TextureFormat::k_8_8_8_8:
+    case xenos::TextureFormat::k_2_10_10_10:
+    case xenos::TextureFormat::k_16_16_16_16_FLOAT:
+      return (uint32_t(fetch.swizzle) & 7) == 2;  // X reads Z
+    default:
+      return false;
+  }
+}
+
 bool BytewiseUnorm(const FetchConstant& raw) {
   switch (Decode(raw).format) {
     case xenos::TextureFormat::k_8_8_8_8:

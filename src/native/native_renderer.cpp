@@ -99,6 +99,10 @@ enum Reg : uint32_t {
   RB_DEPTH_INFO = 0x2002,
   PA_SC_SCREEN_SCISSOR_TL = 0x200E,
   PA_SC_SCREEN_SCISSOR_BR = 0x200F,
+  // D3D keeps the window scissor (SetScissorRect, already clamped to the
+  // target) in these mirror slots, at the end of the 0x2000 group.
+  PA_SC_WINDOW_SCISSOR_TL = 0x2011,
+  PA_SC_WINDOW_SCISSOR_BR = 0x2012,
   RB_COLOR_MASK = 0x2104,
   RB_BLEND_RED = 0x2105,
   RB_STENCILREFMASK_BF = 0x210C,
@@ -310,6 +314,7 @@ struct State {
     uint32_t height = 0;
     uint32_t bytes_per_pixel = 0;
     bool average_bytes = false;
+    bool swap_red_blue = false;  // 8888 resolve the guest stores as ARGB
     uint64_t frame = 0;
   };
   std::vector<PendingReadback> pending_readbacks;
@@ -467,7 +472,13 @@ void DeliverReadbacks() {
       range.memory = p.memory;
       range.size = VK_WHOLE_SIZE;
       dfn.vkInvalidateMappedMemoryRanges(g_vk.vk_device, 1, &range);
-      const auto* pixels = static_cast<const uint8_t*>(mapped);
+      auto* pixels = static_cast<uint8_t*>(mapped);
+      if (p.swap_red_blue && p.bytes_per_pixel == 4) {
+        // The copy is RGBA; the guest's resolve stored red and blue swapped.
+        for (size_t i = 0; i + 3 < size_t(p.width) * p.height * 4; i += 4) {
+          std::swap(pixels[i], pixels[i + 2]);
+        }
+      }
       if (g.scale > 1) {
         // Scaled resolve targets go back to guest memory at guest size.
         std::vector<uint8_t>& guest_pixels = g.readback_scratch;
@@ -511,6 +522,7 @@ void QueueReadback(const textures::FetchConstant& fetch, const textures::Resolve
   pending.height = target.height;
   pending.bytes_per_pixel = bytes_per_pixel;
   pending.average_bytes = textures::BytewiseUnorm(fetch);
+  pending.swap_red_blue = textures::BytewiseUnorm(fetch) && textures::ResolvesRedBlueSwapped(fetch);
   pending.frame = g.frame;
   if (!vk_util::CreateDedicatedAllocationBuffer(
           g.device, VkDeviceSize(target.width) * target.height * bytes_per_pixel,
@@ -744,19 +756,33 @@ void SetDynamicState(const uint8_t* d3d, VkCommandBuffer cb) {
   }
   dfn.vkCmdSetViewport(cb, 0, 1, &viewport);
 
+  // The screen scissor intersected with the window scissor, which clips
+  // UI such as the menus' scrolling tickers to their boxes.
   const uint32_t tl = ReadReg(d3d, PA_SC_SCREEN_SCISSOR_TL);
   const uint32_t br = ReadReg(d3d, PA_SC_SCREEN_SCISSOR_BR);
-  const int32_t s = int32_t(g.scale);
-  int32_t left = int32_t(tl & 0x7FFF) * s, top = int32_t((tl >> 16) & 0x7FFF) * s;
-  int32_t right = int32_t(br & 0x7FFF) * s, bottom = int32_t((br >> 16) & 0x7FFF) * s;
-  right = std::min<int32_t>(right, int32_t(g.active_color->width));
-  bottom = std::min<int32_t>(bottom, int32_t(g.active_color->height));
-  VkRect2D scissor;
-  if (right > left && bottom > top) {
-    scissor = {{left, top}, {uint32_t(right - left), uint32_t(bottom - top)}};
-  } else {
-    scissor = {{0, 0}, {g.active_color->width, g.active_color->height}};
+  int32_t left = int32_t(tl & 0x7FFF), top = int32_t((tl >> 16) & 0x7FFF);
+  int32_t right = int32_t(br & 0x7FFF), bottom = int32_t((br >> 16) & 0x7FFF);
+  if (!(right > left && bottom > top)) {
+    left = top = 0;
+    right = bottom = INT32_MAX;
   }
+  const uint32_t window_tl = ReadReg(d3d, PA_SC_WINDOW_SCISSOR_TL);
+  const uint32_t window_br = ReadReg(d3d, PA_SC_WINDOW_SCISSOR_BR);
+  if (window_br) {
+    left = std::max(left, int32_t(window_tl & 0x7FFF));
+    top = std::max(top, int32_t((window_tl >> 16) & 0x7FFF));
+    right = std::min(right, int32_t(window_br & 0x7FFF));
+    bottom = std::min(bottom, int32_t((window_br >> 16) & 0x7FFF));
+  }
+  const int32_t s = int32_t(g.scale);
+  left = std::min<int32_t>(left * s, int32_t(g.active_color->width));
+  top = std::min<int32_t>(top * s, int32_t(g.active_color->height));
+  right = std::min<int64_t>(int64_t(right) * s, int32_t(g.active_color->width));
+  bottom = std::min<int64_t>(int64_t(bottom) * s, int32_t(g.active_color->height));
+  // An empty rectangle draws nothing, as on the console.
+  const VkRect2D scissor = {{left, top},
+                            {uint32_t(std::max(right - left, 0)),
+                             uint32_t(std::max(bottom - top, 0))}};
   dfn.vkCmdSetScissor(cb, 0, 1, &scissor);
 
   float blend_constants[4];
@@ -1070,7 +1096,8 @@ void OnResolve(const uint8_t* base, uint32_t device, uint32_t flags, uint32_t de
     const textures::FetchConstant fetch =
         textures::LoadFetchConstant(base + destination + kTextureFetchConstant);
     const textures::ResolveTarget target =
-        textures::GetResolveTarget(fetch, (dest_info >> 24) & 1);
+        textures::GetResolveTarget(fetch, ((dest_info >> 24) & 1) ||
+                                              textures::ResolvesRedBlueSwapped(fetch));
     if (target.image) {
       TransitionTarget(*source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
       ImageBarrier(cb, target.image, VK_IMAGE_ASPECT_COLOR_BIT, *target.layout,

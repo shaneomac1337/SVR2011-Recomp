@@ -48,6 +48,13 @@ struct ResolveTarget {
 };
 ResolveTarget GetResolveTarget(const FetchConstant& fetch, bool red_blue_swapped);
 
+// Whether a colour resolve into this texture stores red and blue swapped
+// (RB_COPY_DEST_INFO copy_dest_swap, which the mirror does not hold): D3D
+// swaps for ARGB textures, whose ZYXW fetch swizzle swaps them back, so the
+// destination's swizzle tells. Resolve copies stay RGBA, so their views
+// undo the swizzle's swap.
+bool ResolvesRedBlueSwapped(const FetchConstant& fetch);
+
 // Textures uploaded since the last call, and the CPU time checking them took.
 struct UploadStats {
   uint64_t count;
