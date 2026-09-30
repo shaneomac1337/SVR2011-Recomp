@@ -42,6 +42,20 @@ const ShaderCacheEntry* FindEntry(uint64_t hash) {
   return it != end && it->hash == hash ? it : nullptr;
 }
 
+// The slots a container's shader reads, by the FNV-1a hash its dumped file
+// (and so the fetch slot table) is named with.
+uint32_t FetchSlots(const uint8_t* container, size_t size) {
+  uint64_t fnv = 14695981039346656037ull;
+  for (size_t i = 0; i < size; ++i) {
+    fnv = (fnv ^ container[i]) * 1099511628211ull;
+  }
+  const ShaderFetchSlots* begin = g_shaderFetchSlots;
+  const ShaderFetchSlots* end = begin + g_shaderFetchSlotCount;
+  const ShaderFetchSlots* it = std::lower_bound(
+      begin, end, fnv, [](const ShaderFetchSlots& e, uint64_t h) { return e.fnv < h; });
+  return it != end && it->fnv == fnv ? it->mask : UINT32_MAX;
+}
+
 bool BuildModule(const ShaderCacheEntry& entry, NativeShader& shader) {
   const uint8_t* encoded = g.spirv_blob.data() + entry.spirvOffset;
   const size_t decoded_size = smolv::GetDecodedBufferSize(encoded, entry.spirvSize);
@@ -87,7 +101,9 @@ void OnShaderCreated(const uint8_t* container, uint32_t guest_object, bool is_pi
   std::lock_guard lock(g.mutex);
   g.hash_by_object[guest_object] = hash;
   if (entry) {
-    g.shaders[entry - g_shaderCacheEntries].is_pixel_shader = is_pixel_shader;
+    NativeShader& shader = g.shaders[entry - g_shaderCacheEntries];
+    shader.is_pixel_shader = is_pixel_shader;
+    shader.fetch_slots = FetchSlots(container, size);
   } else if (g.unknown_hashes++ < 8) {
     REXLOG_WARN("native renderer: {} shader {:016X} is not in the converted cache",
                 is_pixel_shader ? "pixel" : "vertex", hash);

@@ -16,6 +16,8 @@ namespace svr::native {
 struct NativeShader {
   VkShaderModule module = VK_NULL_HANDLE;
   uint32_t spec_constants_mask = 0;
+  // Texture fetch slots the shader reads (all when unknown).
+  uint32_t fetch_slots = UINT32_MAX;
   bool is_pixel_shader = false;
 };
 

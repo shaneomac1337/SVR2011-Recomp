@@ -13,4 +13,7 @@ if (!(Get-ChildItem $InputDirectory -Filter '*.bin' -ErrorAction SilentlyContinu
 New-Item -ItemType Directory -Force cache/shader-native | Out-Null
 & $tool $InputDirectory cache/shader-native/shader_cache.cpp .tools/xenosrecomp/XenosRecomp/shader_common.h cache/shader-native/hlsl *> cache/shader-native/run.log
 if ($LASTEXITCODE -ne 0) { throw "XenosRecomp failed; see cache/shader-native/run.log" }
-Write-Output "Shader cache written: cache/shader-native/shader_cache.cpp"
+# The texture slots each shader reads, so draws bind only those.
+& python "$PSScriptRoot/shader_fetch_slots.py" cache/shader-native/hlsl cache/shader-native/fetch_slots.cpp
+if ($LASTEXITCODE -ne 0) { throw "shader_fetch_slots.py failed" }
+Write-Output "Shader cache written: cache/shader-native/shader_cache.cpp and fetch_slots.cpp"

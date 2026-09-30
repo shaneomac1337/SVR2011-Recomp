@@ -50,6 +50,9 @@ REXCVAR_DEFINE_BOOL(svr_native_half_pixel_offset, true, "SVR2011",
 REXCVAR_DEFINE_BOOL(svr_native_reuse_constants, true, "SVR2011",
                     "Native renderer: upload shader constants only when they differ from the "
                     "previous draw's");
+REXCVAR_DEFINE_BOOL(svr_native_bind_used_slots, true, "SVR2011",
+                    "Native renderer: bind textures only in the fetch slots the draw's shaders "
+                    "read (from cache/shader-native/fetch_slots.cpp)");
 REXCVAR_DEFINE_BOOL(svr_native_swap_half2, true, "SVR2011",
                     "Native renderer: 16-bit texcoords have their halves swapped after the "
                     "32-bit vertex byte swap");
@@ -952,7 +955,8 @@ bool UploadConstantBlock(State::ReusedBlock& block, const uint8_t* big_endian,
   return true;
 }
 
-bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstants& push) {
+bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, uint32_t fetch_slots,
+                     PushConstants& push) {
   if (!UploadConstantBlock(g.vertex_constants, d3d + kDeviceVertexConstants,
                            push.vertex_constants) ||
       !UploadConstantBlock(g.pixel_constants, d3d + kDevicePixelConstants,
@@ -963,7 +967,7 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, PushConstan
   SharedConstants* shared = &shared_values;
   for (uint32_t slot = 0; slot < kFetchSlots; ++slot) {
     const uint8_t* fetch_data = d3d + kDeviceFetchConstants + slot * 24;
-    if ((LoadBE32(fetch_data) & 3) != 2 ||
+    if (!(fetch_slots & (1u << slot)) || (LoadBE32(fetch_data) & 3) != 2 ||
         (REXCVAR_GET(svr_native_debug_null_slots) & (1u << slot))) {
       continue;
     }
@@ -1336,7 +1340,10 @@ const VertexLayout* PrepareDraw(const uint8_t* base, const uint8_t* d3d,
   }
 
   PushConstants push;
-  if (!UploadConstants(d3d, layout.swapped_texcoords, push)) {
+  const uint32_t fetch_slots = REXCVAR_GET(svr_native_bind_used_slots)
+                                   ? vertex_shader->fetch_slots | pixel_shader->fetch_slots
+                                   : UINT32_MAX;
+  if (!UploadConstants(d3d, layout.swapped_texcoords, fetch_slots, push)) {
     ++g.stats.other;
     return nullptr;
   }
