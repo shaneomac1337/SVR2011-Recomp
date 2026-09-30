@@ -125,10 +125,16 @@ struct Texture {
   uint32_t levels = 1;
   uint32_t layers = 1;
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-  // Guest swizzle (12 bits) -> bindless index of a view with that mapping.
-  std::unordered_map<uint32_t, uint32_t> views;
+  // Guest swizzle (12 bits) -> a view with that mapping and its bindless index.
+  struct View {
+    VkImageView view;
+    DescriptorHeap heap;
+    uint32_t index;
+  };
+  std::unordered_map<uint32_t, View> views;
   uint64_t content_hash = 0;
   uint64_t checked_frame = UINT64_MAX;
+  uint64_t last_used = 0;
   bool uploaded = false;
   bool is_resolve_target = false;
   bool red_blue_swapped = false;
@@ -144,6 +150,25 @@ struct State {
   bool defaults_ready = false;
   uint32_t unsupported_logged = 0;
 } g;
+
+// Guest textures unused this many frames are destroyed (reloaded if needed).
+constexpr uint64_t kEvictAfterFrames = 1800;
+
+// Destroys the texture's image, memory and views once frames in flight are
+// done with them, and frees its bindless slots.
+void RetireTexture(Texture& texture) {
+  Retired retired;
+  retired.image = texture.image;
+  retired.memory = texture.memory;
+  for (const auto& [swizzle, view] : texture.views) {
+    retired.views.push_back(view.view);
+    retired.descriptors.emplace_back(view.heap, view.index);
+  }
+  Retire(std::move(retired));
+  texture.image = VK_NULL_HANDLE;
+  texture.memory = VK_NULL_HANDLE;
+  texture.views.clear();
+}
 
 bool CreateImage(Texture& texture, VkImageType type, VkFormat format, uint32_t width,
                  uint32_t height, uint32_t depth, uint32_t layers, VkImageCreateFlags flags,
@@ -191,7 +216,7 @@ uint32_t ViewIndex(Texture& texture, uint32_t swizzle, DescriptorHeap heap,
                    VkImageViewType view_type) {
   const auto it = texture.views.find(swizzle);
   if (it != texture.views.end()) {
-    return it->second;
+    return it->second.index;
   }
   VkImageViewCreateInfo view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view_info.image = texture.image;
@@ -213,7 +238,7 @@ uint32_t ViewIndex(Texture& texture, uint32_t swizzle, DescriptorHeap heap,
   if (index) {
     WriteImageDescriptor(heap, index, view);
   }
-  texture.views.emplace(swizzle, index);
+  texture.views.emplace(swizzle, Texture::View{view, heap, index});
   return index;
 }
 
@@ -562,10 +587,12 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      t.max_level + 1)) {
       REXLOG_ERROR("native renderer: could not create a {}x{} texture", t.width, t.height);
+      g.textures.erase(key);
       return binding;
     }
   }
   Texture& texture = *slot;
+  texture.last_used = frame;
   if (texture.checked_frame != frame) {
     texture.checked_frame = frame;
     UploadTexture(texture, t, upload_cb);
@@ -594,7 +621,7 @@ ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) 
   }
   std::unique_ptr<Texture>& slot = g.resolve_targets[base_address];
   if (slot && (slot->width != width || slot->height != height || slot->format != info.format)) {
-    // Views stay allocated; the heap is large and this is rare.
+    RetireTexture(*slot);
     slot.reset();
   }
   if (!slot) {
@@ -609,6 +636,12 @@ ResolveTarget GetResolveTarget(const FetchConstant& raw, bool red_blue_swapped) 
   }
   if (slot->red_blue_swapped != red_blue_swapped) {
     slot->red_blue_swapped = red_blue_swapped;
+    Retired retired;
+    for (const auto& [swizzle, view] : slot->views) {
+      retired.views.push_back(view.view);
+      retired.descriptors.emplace_back(view.heap, view.index);
+    }
+    Retire(std::move(retired));
     slot->views.clear();
   }
   return {slot->image, slot->format, slot->width, slot->height, &slot->layout};
@@ -645,6 +678,17 @@ void WriteToGuest(const FetchConstant& raw, const uint8_t* pixels, uint32_t widt
       }
     } else {
       std::memcpy(dest + size_t(y) * linear_row_bytes, row.data(), row.size());
+    }
+  }
+}
+
+void EvictUnused(uint64_t frame) {
+  for (auto it = g.textures.begin(); it != g.textures.end();) {
+    if (it->second->last_used + kEvictAfterFrames < frame) {
+      RetireTexture(*it->second);
+      it = g.textures.erase(it);
+    } else {
+      ++it;
     }
   }
 }

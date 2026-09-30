@@ -35,6 +35,8 @@ std::vector<UploadSlot> g_slots;
 UploadSlot* g_slot = nullptr;
 VkDeviceSize g_chunk_size = 0;
 uint32_t g_next_descriptor[kHeapCount] = {};
+std::vector<uint32_t> g_free_descriptors[kHeapCount];
+std::vector<std::pair<uint64_t, Retired>> g_retired;
 bool g_ring_full_logged = false;
 
 bool CreateHeaps() {
@@ -239,6 +241,11 @@ Upload AllocateUpload(VkDeviceSize size, VkDeviceSize alignment) {
 }
 
 uint32_t AllocateDescriptor(DescriptorHeap heap) {
+  if (!g_free_descriptors[heap].empty()) {
+    const uint32_t index = g_free_descriptors[heap].back();
+    g_free_descriptors[heap].pop_back();
+    return index;
+  }
   if (g_next_descriptor[heap] >= kHeapCapacity[heap]) {
     return 0;
   }
@@ -268,6 +275,41 @@ void WriteSamplerDescriptor(uint32_t index, VkSampler sampler) {
   write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   write.pImageInfo = &image_info;
   g_vk.dfn->vkUpdateDescriptorSets(g_vk.vk_device, 1, &write, 0, nullptr);
+}
+
+void Retire(Retired&& objects) { g_retired.emplace_back(g_vk.frame, std::move(objects)); }
+
+void DestroyRetired(uint64_t completed_frame) {
+  const auto& dfn = *g_vk.dfn;
+  size_t kept = 0;
+  for (size_t i = 0; i < g_retired.size(); ++i) {
+    if (g_retired[i].first > completed_frame) {
+      if (kept != i) {
+        g_retired[kept] = std::move(g_retired[i]);
+      }
+      ++kept;
+      continue;
+    }
+    const Retired& objects = g_retired[i].second;
+    for (VkImageView view : objects.views) {
+      dfn.vkDestroyImageView(g_vk.vk_device, view, nullptr);
+    }
+    if (objects.image) {
+      dfn.vkDestroyImage(g_vk.vk_device, objects.image, nullptr);
+    }
+    if (objects.buffer) {
+      dfn.vkDestroyBuffer(g_vk.vk_device, objects.buffer, nullptr);
+    }
+    if (objects.memory) {
+      dfn.vkFreeMemory(g_vk.vk_device, objects.memory, nullptr);
+    }
+    for (const auto& [heap, index] : objects.descriptors) {
+      if (index) {
+        g_free_descriptors[heap].push_back(index);
+      }
+    }
+  }
+  g_retired.resize(kept);
 }
 
 void BindDescriptorHeaps(VkCommandBuffer command_buffer) {

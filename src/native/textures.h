@@ -40,6 +40,10 @@ struct ResolveTarget {
 };
 ResolveTarget GetResolveTarget(const FetchConstant& fetch, bool red_blue_swapped);
 
+// Destroys guest-memory textures no draw has used for a while, so memory does
+// not grow with every arena and attire the session loads.
+void EvictUnused(uint64_t frame);
+
 // The resolve target at a guest physical address, or an empty result.
 ResolveTarget FindResolveTarget(uint32_t base_address);
 

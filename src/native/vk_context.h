@@ -5,6 +5,8 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 #include <rex/ui/vulkan/device.h>
 
@@ -66,6 +68,10 @@ struct Context {
   PFN_vkCmdBlitImage vkCmdBlitImage = nullptr;
   PFN_vkCmdClearDepthStencilImage vkCmdClearDepthStencilImage = nullptr;
 
+  // The frame being recorded; resources retired now are destroyed once it
+  // has completed on the GPU.
+  uint64_t frame = 0;
+
   VkDescriptorSetLayout set_layouts[kHeapCount] = {};
   VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
   VkDescriptorSet sets[kHeapCount] = {};
@@ -88,10 +94,22 @@ void BeginUploadFrame(uint32_t slot);
 Upload AllocateUpload(VkDeviceSize size, VkDeviceSize alignment = 16);
 
 // Bindless slots. Index 0 of each heap holds a default resource, so unbound
-// fetch slots read something valid.
+// fetch slots read something valid. Freed slots are reused.
 uint32_t AllocateDescriptor(DescriptorHeap heap);
 void WriteImageDescriptor(DescriptorHeap heap, uint32_t index, VkImageView view);
 void WriteSamplerDescriptor(uint32_t index, VkSampler sampler);
 void BindDescriptorHeaps(VkCommandBuffer command_buffer);
+
+// Objects frames in flight may still use: Retire queues them with the frame
+// being recorded, DestroyRetired destroys those whose frame has completed.
+struct Retired {
+  VkImage image = VK_NULL_HANDLE;
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  std::vector<VkImageView> views;
+  std::vector<std::pair<DescriptorHeap, uint32_t>> descriptors;
+};
+void Retire(Retired&& objects);
+void DestroyRetired(uint64_t completed_frame);
 
 }  // namespace svr::native

@@ -556,6 +556,14 @@ void BeginFrameIfNeeded() {
   FrameSlot& slot = g.slots[slot_index];
   dfn.vkWaitForFences(g_vk.vk_device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
   dfn.vkResetFences(g_vk.vk_device, 1, &slot.fence);
+  // The slot's previous frame, and every frame before it, has completed.
+  g_vk.frame = g.frame;
+  if (g.frame >= kFramesInFlight) {
+    DestroyRetired(g.frame - kFramesInFlight);
+  }
+  if (g.frame % 300 == 0) {
+    textures::EvictUnused(g.frame);
+  }
   dfn.vkResetCommandPool(g_vk.vk_device, slot.command_pool, 0);
   VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -579,7 +587,17 @@ RenderTarget* GetRenderTarget(uint64_t key, VkFormat format, uint32_t width, uin
                               bool is_depth) {
   std::unique_ptr<RenderTarget>& slot = g.render_targets[key];
   if (slot && (slot->width < width || slot->height < height)) {
-    // Grows in place of the old one; the old image is leaked for now.
+    // Grows in place of the old one, which frames in flight may still use.
+    if (g.active_color == slot.get() || g.active_depth == slot.get()) {
+      EndRendering();
+      g.active_color = g.active_depth = nullptr;
+    }
+    std::erase(g.render_target_order, slot.get());
+    Retired retired;
+    retired.image = slot->image;
+    retired.memory = slot->memory;
+    retired.views.push_back(slot->view);
+    Retire(std::move(retired));
     slot.reset();
   }
   if (slot) {
@@ -1049,8 +1067,13 @@ void ResolveDepth(const uint8_t* d3d, const textures::FetchConstant& fetch) {
   const VkDeviceSize size = VkDeviceSize(depth.width) * depth.height * 4;
   if (g.depth_staging_size < size) {
     if (g.depth_staging) {
-      // Frames still in flight may use the old buffer; it is small, so leak it.
+      // Frames still in flight may use the old buffer.
+      Retired retired;
+      retired.buffer = g.depth_staging;
+      retired.memory = g.depth_staging_memory;
+      Retire(std::move(retired));
       g.depth_staging = VK_NULL_HANDLE;
+      g.depth_staging_memory = VK_NULL_HANDLE;
     }
     if (!vk_util::CreateDedicatedAllocationBuffer(
             g.device, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
