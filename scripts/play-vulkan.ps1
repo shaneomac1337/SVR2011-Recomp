@@ -46,7 +46,7 @@ foreach ($argument in @('--gpu_plugin=xenos', '--vulkan_device=-1',
     $info.ArgumentList.Add($argument)
 }
 if ($settings) {
-    foreach ($argument in (Get-SvrDisplayArguments $settings)) { $info.ArgumentList.Add($argument) }
+    foreach ($argument in (Get-SvrDisplayArguments $settings (Get-SvrScreenHeight))) { $info.ArgumentList.Add($argument) }
     if ($settings.perfCapture) { $PerfCapture = $true }
 }
 if ($PerfCapture) {

@@ -51,7 +51,7 @@ namespace Svr2011Launcher
                 "--game_data_root=" + DataDir, "--user_data_root=" + SaveDir, "--cache_root=" + CacheDir,
                 "--log_file=" + Path.Combine(runDir, "runtime.log"), "--log_level=info", "--log_flush_interval=1",
             };
-            arguments.AddRange(settings.DisplayArguments());
+            arguments.AddRange(settings.DisplayArguments(LauncherSettings.ScreenHeight()));
             if (settings.PerfCapture) arguments.Add("--perf_log_csv=" + Path.Combine(runDir, "perf.csv"));
             // FSI keeps EDRAM contents across frames the guest does not redraw (character-select flicker).
             arguments.Add("--render_target_path_vulkan=fsi");
@@ -179,7 +179,8 @@ namespace Svr2011Launcher
             foreach (var name in new[] { "BuildLabel", "SetupView", "IsoPath", "Browse", "SetupProgress", "SetupDetail", "SetupStatus",
                 "Install", "PlayView", "SettingsPanel", "DisplayMode", "WindowSize", "Scale", "ScaleHelp", "Presentation",
                 "PresentationHelp", "Controller", "PerfCapture", "Save", "Reset", "Status", "Play", "Logs",
-                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings", "FramePacing", "FramePacingHelp", "Sharpening" })
+                "Art", "SettingsDrawer", "SettingsToggle", "CloseSettings", "FramePacing", "FramePacingHelp", "Sharpening",
+                "Renderer", "RendererHelp" })
                 ui[name] = (FrameworkElement)Window.FindName(name);
 
             string warning = null;
@@ -192,7 +193,7 @@ namespace Svr2011Launcher
             if (File.Exists(layout.VersionFile)) Text("BuildLabel").Text = File.ReadAllText(layout.VersionFile).Trim();
 
             ShowSettings(settings);
-            foreach (var name in new[] { "DisplayMode", "WindowSize", "Scale", "Controller", "Presentation", "FramePacing" })
+            foreach (var name in new[] { "DisplayMode", "WindowSize", "Scale", "Controller", "Presentation", "FramePacing", "Renderer" })
                 ((ComboBox)ui[name]).SelectionChanged += (s, e) => SetDirty();
             Button("PerfCapture").Click += (s, e) => SetDirty();
             Button("Sharpening").Click += (s, e) => SetDirty();
@@ -338,6 +339,7 @@ namespace Svr2011Launcher
             Select(Combo("Controller"), value.Controller);
             Select(Combo("Presentation"), value.Presentation);
             Select(Combo("FramePacing"), value.FramePacing);
+            Select(Combo("Renderer"), value.Renderer);
             ((CheckBox)ui["PerfCapture"]).IsChecked = value.PerfCapture;
             ((CheckBox)ui["Sharpening"]).IsChecked = value.Sharpening;
             UpdateHelp();
@@ -356,6 +358,7 @@ namespace Svr2011Launcher
                 FramePacing = Tag(Combo("FramePacing")),
                 PerfCapture = ((CheckBox)ui["PerfCapture"]).IsChecked == true,
                 Sharpening = ((CheckBox)ui["Sharpening"]).IsChecked == true,
+                Renderer = Tag(Combo("Renderer")),
             };
         }
 
@@ -364,7 +367,10 @@ namespace Svr2011Launcher
             Combo("WindowSize").IsEnabled = Tag(Combo("DisplayMode")) == "Windowed";
             Text("ScaleHelp").Text = int.Parse(Tag(Combo("Scale"))) > 1
                 ? "More detail on models and the arena. Needs a stronger GPU: 3× uses about twice the GPU time of 1×."
-                : "Native rendering is the tested setting. Window size does not change rendering detail.";
+                : "The original resolution is the tested setting. Window size does not change rendering detail.";
+            Text("RendererHelp").Text = Tag(Combo("Renderer")) == "Native"
+                ? "Draws the game directly with Vulkan: sharper textures and lower GPU load. Still in testing; if something looks wrong, switch back to Classic."
+                : "Draws the game the way the Xbox 360 does. Works on every supported GPU.";
             switch (Tag(Combo("Presentation")))
             {
                 case "Mailbox": Text("PresentationHelp").Text = "Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable."; break;
@@ -451,8 +457,37 @@ namespace Svr2011Launcher
             ui["SettingsPanel"].IsEnabled = true;
             Button("Play").IsEnabled = true;
             ((ContentControl)ui["Play"]).Content = "_Play";
-            if (code == 0) SetStatus("Game closed normally. Ready for another match.", false);
+            var native = settings.Renderer == "Native";
+            var fellBack = native && LogMentions(session, NativeFallbackMessage);
+            if (code == 0 && fellBack)
+                SetStatus("The native renderer could not start on this PC, so the game used Classic. Choose Logs for the details.", true);
+            else if (code == 0) SetStatus("Game closed normally. Ready for another match.", false);
+            else if (native && !fellBack)
+                SetStatus("The game stopped unexpectedly with the native renderer. Switch Renderer to Classic if it happens again, and choose Logs to report it.", true);
             else SetStatus("The game stopped unexpectedly. Choose Logs; the newest session folder holds the log for an issue on the project's GitHub page.", true);
+        }
+
+        // Logged by the game when the native renderer cannot start and Classic takes over.
+        const string NativeFallbackMessage = "native renderer: could not create Vulkan resources";
+
+        // Logs rotate, so the startup lines may sit in an older runtime.N.log.
+        static bool LogMentions(string session, string text)
+        {
+            if (!Directory.Exists(session)) return false;
+            foreach (var log in Directory.GetFiles(session, "runtime*.log"))
+            {
+                try
+                {
+                    using (var reader = new StreamReader(new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)))
+                    {
+                        string line;
+                        while ((line = reader.ReadLine()) != null)
+                            if (line.Contains(text)) return true;
+                    }
+                }
+                catch (IOException) { }
+            }
+            return false;
         }
 
         static List<string> FatalTargets(string log)

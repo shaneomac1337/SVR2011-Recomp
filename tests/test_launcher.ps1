@@ -36,6 +36,20 @@ try {
     Assert ((Get-SvrDisplayArguments $sharp) -contains '--present_effect=fsr') 'Sharpening on did not select FSR.'
     $sharp.sharpening = $false
     Assert ((Get-SvrDisplayArguments $sharp) -contains '--present_effect=bilinear') 'Sharpening off did not select bilinear.'
+    $native = New-SvrSettings
+    Assert (!(@(Get-SvrDisplayArguments $native 1440) -like '--svr_native*')) 'Classic renderer passed native arguments.'
+    $native.renderer = 'Native'
+    $native.scale = 2
+    $nativeArgs = @(Get-SvrDisplayArguments $native 1440)
+    foreach ($argument in @('--svr_native_renderer=true', '--svr_native_resolution_scale=2', '--svr_native_lod_bias=-0.5')) {
+        Assert ($nativeArgs -contains $argument) "Missing native argument: $argument"
+    }
+    # Rendering above the output resolution supersamples, so the sharper bias does not shimmer.
+    foreach ($case in @(@('Borderless', '1280x720', 3, 1440, '-1'), @('Borderless', '1280x720', 2, 2160, '-0.5'),
+        @('Borderless', '1280x720', 3, 0, '-0.5'), @('Windowed', '1600x900', 2, 2160, '-1'), @('Windowed', '1920x1080', 1, 720, '-0.5'))) {
+        $native.displayMode = $case[0]; $native.windowSize = $case[1]; $native.scale = $case[2]
+        Assert ((Get-SvrDisplayArguments $native $case[3]) -contains "--svr_native_lod_bias=$($case[4])") "Wrong bias for $($case -join ' ')."
+    }
     foreach ($case in @(@('Auto', 'true'), @('Game', 'false'))) {
         $value = New-SvrSettings
         $value.framePacing = $case[0]
@@ -47,6 +61,7 @@ try {
             Set-Content -LiteralPath $legacy
         Assert ((Read-SvrSettings $legacy).framePacing -eq 'Auto') 'Saved Even pacing did not load as Automatic.'
         Assert ((Read-SvrSettings $legacy).sharpening -eq $true) 'Settings without sharpening did not default to on.'
+        Assert ((Read-SvrSettings $legacy).renderer -eq 'Classic') 'Settings without a renderer did not default to Classic.'
     } finally { Remove-Item -LiteralPath $legacy -ErrorAction SilentlyContinue }
     $bad = New-SvrSettings
     $bad.framePacing = 'Fast'
@@ -57,7 +72,7 @@ try {
     $old | ConvertTo-Json | Set-Content -LiteralPath $path
     Assert ((Read-SvrSettings $path).presentation -eq 'Fifo') 'Old settings did not migrate to the default.'
     Save-SvrSettings $path $loaded
-    foreach ($field in @('scale','windowSize','controller','displayMode','perfCapture','version','presentation')) {
+    foreach ($field in @('scale','windowSize','controller','displayMode','perfCapture','version','presentation','renderer')) {
         $invalid = New-SvrSettings
         $invalid[$field] = 'invalid'
         $rejected = $false

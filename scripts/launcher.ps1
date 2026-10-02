@@ -16,7 +16,7 @@ try { $script:settings = Read-SvrSettings $SettingsPath } catch {
 $reader = [System.Xml.XmlNodeReader]::new([xml](Get-Content "$projectRoot/launcher/Launcher.xaml" -Raw))
 try { $window = [Windows.Markup.XamlReader]::Load($reader) } finally { $reader.Close() }
 $ui = @{}
-foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','FramePacing','FramePacingHelp','Controller','PerfCapture','Sharpening','Save','Reset','Play','Logs','Status','SettingsPanel')) {
+foreach ($name in @('DisplayMode','WindowSize','Scale','ScaleHelp','Presentation','PresentationHelp','FramePacing','FramePacingHelp','Controller','PerfCapture','Sharpening','Renderer','RendererHelp','Save','Reset','Play','Logs','Status','SettingsPanel')) {
     $ui[$name] = $window.FindName($name)
 }
 function Set-Status([string]$Message, [bool]$ErrorState = $false) {
@@ -30,7 +30,10 @@ function Update-DisplayHelp {
     $ui.WindowSize.IsEnabled = $ui.DisplayMode.SelectedItem.Tag -eq 'Windowed'
     $ui.ScaleHelp.Text = if ([int]$ui.Scale.SelectedItem.Tag -gt 1) {
         'More detail on models and the arena. Needs a stronger GPU: 3× uses about twice the GPU time of 1×.'
-    } else { 'Native rendering is the validated setting. Window size does not change rendering detail.' }
+    } else { 'The original resolution is the validated setting. Window size does not change rendering detail.' }
+    $ui.RendererHelp.Text = if ($ui.Renderer.SelectedItem.Tag -eq 'Native') {
+        'Draws the game directly with Vulkan: sharper textures and lower GPU load. Still in testing; if something looks wrong, switch back to Classic.'
+    } else { 'Draws the game the way the Xbox 360 does. Works on every supported GPU.' }
     $ui.PresentationHelp.Text = switch ($ui.Presentation.SelectedItem.Tag) {
         'Mailbox' { 'Syncs display output without a fixed FPS cap. Falls back to monitor VSync if unavailable. Needs a gameplay check.' }
         'Immediate' { 'Shows each frame as soon as it is ready. Slightly lower latency, but the image can tear.' }
@@ -48,6 +51,7 @@ function Show-Settings($Value) {
     Select-Value $ui.Controller $Value.controller
     Select-Value $ui.Presentation $Value.presentation
     Select-Value $ui.FramePacing $Value.framePacing
+    Select-Value $ui.Renderer $Value.renderer
     $ui.PerfCapture.IsChecked = $Value.perfCapture
     $ui.Sharpening.IsChecked = $Value.sharpening
     Update-DisplayHelp
@@ -63,6 +67,7 @@ function Read-Controls {
     $value.framePacing = [string]$ui.FramePacing.SelectedItem.Tag
     $value.perfCapture = [bool]$ui.PerfCapture.IsChecked
     $value.sharpening = [bool]$ui.Sharpening.IsChecked
+    $value.renderer = [string]$ui.Renderer.SelectedItem.Tag
     return $value
 }
 function Set-Dirty {
@@ -72,7 +77,7 @@ function Set-Dirty {
     }
 }
 Show-Settings $script:settings
-foreach ($name in @('DisplayMode','WindowSize','Scale','Controller','Presentation','FramePacing')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
+foreach ($name in @('DisplayMode','WindowSize','Scale','Controller','Presentation','FramePacing','Renderer')) { $ui[$name].Add_SelectionChanged({ Set-Dirty }) }
 $ui.PerfCapture.Add_Click({ Set-Dirty })
 $ui.Sharpening.Add_Click({ Set-Dirty })
 $ui.Save.Add_Click({
@@ -102,6 +107,7 @@ $ui.Play.Add_Click({
         if (!(Test-Path "$projectRoot/assets/default.xex")) { throw 'Game files are missing from the assets folder.' }
         $value = Read-Controls
         Save-SvrSettings $SettingsPath $value
+        $script:runSettings = $value
         $script:runPath = "$projectRoot/analysis/vulkan-play-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')"
         [IO.Directory]::CreateDirectory($script:runPath) | Out-Null
         # Freeze this run's settings; subsequent launcher edits cannot race startup.
@@ -134,7 +140,13 @@ $timer.Add_Tick({
         $ui.SettingsPanel.IsEnabled = $true
         $ui.Play.IsEnabled = $true
         $ui.Play.Content = '_Play SVR 2011'
-        if ($code -eq 0) { Set-Status 'Game closed normally. Ready for another match.' }
+        $native = $script:runSettings.renderer -eq 'Native'
+        # Logged by the game when the native renderer cannot start and Classic takes over; logs rotate.
+        $fellBack = $native -and [bool](Select-String -Path "$script:runPath/runtime*.log" -SimpleMatch -Quiet `
+            -Pattern 'native renderer: could not create Vulkan resources' -ErrorAction SilentlyContinue)
+        if ($code -eq 0 -and $fellBack) { Set-Status 'The native renderer could not start on this PC, so the game used Classic. Open logs for the details.' $true }
+        elseif ($code -eq 0) { Set-Status 'Game closed normally. Ready for another match.' }
+        elseif ($native -and !$fellBack) { Set-Status 'The game stopped unexpectedly with the native renderer. Switch Renderer to Classic if it happens again, and open logs to report it.' $true }
         else { Set-Status 'The session ended with an error. Open logs for launch-error.txt and runtime.log.' $true }
     }
 })
@@ -156,7 +168,10 @@ $window.Add_ContentRendered({
             Select-Value $ui.DisplayMode 'Windowed'
             if (!$ui.WindowSize.IsEnabled) { throw 'Window-size control did not enable.' }
             Select-Value $ui.Scale 2
-            if ($ui.ScaleHelp.Text -notlike '*Higher detail*') { throw 'Scaling explanation did not update.' }
+            if ($ui.ScaleHelp.Text -notlike '*More detail*') { throw 'Scaling explanation did not update.' }
+            if ($ui.RendererHelp.Text -notlike '*Xbox 360*') { throw 'Classic renderer explanation missing.' }
+            Select-Value $ui.Renderer 'Native'
+            if ($ui.RendererHelp.Text -notlike '*Vulkan*' -or (Read-Controls).renderer -ne 'Native') { throw 'Renderer choice did not update.' }
             Show-Settings (New-SvrSettings)
             Set-Status 'Ready. Saves are kept in userdata/vulkan.'
             if ($ScreenshotPath) {

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -19,12 +20,14 @@ namespace Svr2011Launcher
         public string Presentation = "Fifo";
         public string FramePacing = "Auto";
         public bool Sharpening = true;
+        public string Renderer = "Classic";
 
         static readonly string[] DisplayModes = { "Borderless", "Windowed" };
         static readonly string[] WindowSizes = { "1280x720", "1600x900", "1920x1080" };
         static readonly string[] Controllers = { "Auto", "Xbox" };
         static readonly string[] Presentations = { "Immediate", "Mailbox", "Fifo" };
         static readonly string[] FramePacings = { "Auto", "Game", "Even" };
+        static readonly string[] Renderers = { "Classic", "Native" };
 
         public void Validate()
         {
@@ -35,6 +38,7 @@ namespace Svr2011Launcher
             if (Array.IndexOf(Controllers, Controller) < 0) throw new InvalidDataException("Invalid controller mode.");
             if (Array.IndexOf(Presentations, Presentation) < 0) throw new InvalidDataException("Invalid display synchronization mode.");
             if (Array.IndexOf(FramePacings, FramePacing) < 0) throw new InvalidDataException("Invalid frame pacing mode.");
+            if (Array.IndexOf(Renderers, Renderer) < 0) throw new InvalidDataException("Invalid renderer.");
         }
 
         public static LauncherSettings Load(string path)
@@ -51,6 +55,7 @@ namespace Svr2011Launcher
             settings.Controller = Require<string>(values, "controller");
             settings.PerfCapture = Require<bool>(values, "perfCapture");
             settings.Sharpening = values.ContainsKey("sharpening") ? Require<bool>(values, "sharpening") : true;
+            settings.Renderer = values.ContainsKey("renderer") ? Require<string>(values, "renderer") : "Classic";
             // Older version-one files predate display synchronization controls.
             settings.Presentation = values.ContainsKey("presentation") ? Require<string>(values, "presentation") : "Fifo";
             settings.FramePacing = values.ContainsKey("framePacing") ? Require<string>(values, "framePacing") : "Auto";
@@ -81,7 +86,8 @@ namespace Svr2011Launcher
             json.AppendLine("  \"perfCapture\": " + (PerfCapture ? "true" : "false") + ",");
             json.AppendLine("  \"presentation\": " + serializer.Serialize(Presentation) + ",");
             json.AppendLine("  \"framePacing\": " + serializer.Serialize(FramePacing) + ",");
-            json.AppendLine("  \"sharpening\": " + (Sharpening ? "true" : "false"));
+            json.AppendLine("  \"sharpening\": " + (Sharpening ? "true" : "false") + ",");
+            json.AppendLine("  \"renderer\": " + serializer.Serialize(Renderer));
             json.AppendLine("}");
             var directory = Path.GetDirectoryName(Path.GetFullPath(path));
             Directory.CreateDirectory(directory);
@@ -98,11 +104,12 @@ namespace Svr2011Launcher
             }
         }
 
-        public List<string> DisplayArguments()
+        // screenHeight: the screen's height in pixels for borderless fullscreen (0 = unknown).
+        public List<string> DisplayArguments(int screenHeight)
         {
             Validate();
             var size = WindowSize.Split('x');
-            return new List<string>
+            var arguments = new List<string>
             {
                 "--fullscreen=" + Lower(DisplayMode == "Borderless"),
                 "--window_width=" + size[0],
@@ -120,6 +127,43 @@ namespace Svr2011Launcher
                 "--present_effect=" + (Sharpening ? "fsr" : "bilinear"),
                 "--present_fsr_sharpness_reduction=0.5",
             };
+            if (Renderer == "Native")
+            {
+                arguments.Add("--svr_native_renderer=true");
+                arguments.Add("--svr_native_resolution_scale=" + Scale);
+                arguments.Add("--svr_native_lod_bias=" + NativeLodBias(screenHeight));
+            }
+            return arguments;
+        }
+
+        // Sharper distant textures cost shimmer, unless each screen pixel averages several rendered ones.
+        public string NativeLodBias(int screenHeight)
+        {
+            var outputHeight = DisplayMode == "Windowed" ? int.Parse(WindowSize.Split('x')[1]) : screenHeight;
+            return outputHeight > 0 && 720 * Scale > outputHeight ? "-1" : "-0.5";
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct DevMode
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Name;
+            public short SpecVersion, DriverVersion, Size, DriverExtra;
+            public int Fields, PositionX, PositionY, Orientation, FixedOutput;
+            public short Color, Duplex, YResolution, TTOption, Collate;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
+            public short LogPixels;
+            public int BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern bool EnumDisplaySettings(string device, int mode, ref DevMode devMode);
+
+        // The primary screen's height in physical pixels, whatever the DPI scaling.
+        public static int ScreenHeight()
+        {
+            var mode = new DevMode();
+            mode.Size = (short)Marshal.SizeOf(typeof(DevMode));
+            return EnumDisplaySettings(null, -1, ref mode) ? mode.PelsHeight : 0;
         }
 
         // The game advances a fixed step per frame, so each frame belongs on an even 60 Hz beat. The

@@ -1,6 +1,6 @@
 # Shared, UI-independent settings and argument validation.
 function New-SvrSettings {
-    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Fifo'; framePacing = 'Auto'; sharpening = $true }
+    [ordered]@{ version = 1; displayMode = 'Borderless'; windowSize = '1280x720'; scale = 1; controller = 'Auto'; perfCapture = $false; presentation = 'Fifo'; framePacing = 'Auto'; sharpening = $true; renderer = 'Classic' }
 }
 
 function Test-SvrSettings($Settings) {
@@ -14,6 +14,7 @@ function Test-SvrSettings($Settings) {
     if ($Settings.presentation -notin @('Immediate', 'Mailbox', 'Fifo')) { throw 'Invalid display synchronization mode.' }
     if ($Settings.framePacing -notin @('Auto', 'Game', 'Even')) { throw 'Invalid frame pacing mode.' }
     if ($Settings.sharpening -isnot [bool]) { throw 'Invalid sharpening setting.' }
+    if ($Settings.renderer -notin @('Classic', 'Native')) { throw 'Invalid renderer.' }
 }
 
 function Read-SvrSettings([string]$Path) {
@@ -25,6 +26,7 @@ function Read-SvrSettings([string]$Path) {
     # 'Even' was a separate choice until Automatic became even pacing on every monitor.
     if ($settings.framePacing -eq 'Even') { $settings.framePacing = 'Auto' }
     if (!$settings.Contains('sharpening')) { $settings.sharpening = $true }
+    if (!$settings.Contains('renderer')) { $settings.renderer = 'Classic' }
     Test-SvrSettings $settings
     return $settings
 }
@@ -42,7 +44,8 @@ function Save-SvrSettings([string]$Path, $Settings) {
     }
 }
 
-function Get-SvrDisplayArguments($Settings) {
+# ScreenHeight: the screen's height in pixels for borderless fullscreen (0 = unknown).
+function Get-SvrDisplayArguments($Settings, [int]$ScreenHeight = 0) {
     Test-SvrSettings $Settings
     $size = $Settings.windowSize.Split('x')
     '--fullscreen=' + ($Settings.displayMode -eq 'Borderless').ToString().ToLowerInvariant()
@@ -60,6 +63,47 @@ function Get-SvrDisplayArguments($Settings) {
     # FSR 1 upscales when the game image is smaller than the screen; otherwise CAS sharpens or downsamples it.
     '--present_effect=' + $(if ($Settings.sharpening) { 'fsr' } else { 'bilinear' })
     '--present_fsr_sharpness_reduction=0.5'
+    if ($Settings.renderer -eq 'Native') {
+        '--svr_native_renderer=true'
+        "--svr_native_resolution_scale=$($Settings.scale)"
+        '--svr_native_lod_bias=' + (Get-SvrNativeLodBias $Settings $ScreenHeight)
+    }
+}
+
+# Sharper distant textures cost shimmer, unless each screen pixel averages several rendered ones.
+function Get-SvrNativeLodBias($Settings, [int]$ScreenHeight) {
+    $outputHeight = if ($Settings.displayMode -eq 'Windowed') { [int]$Settings.windowSize.Split('x')[1] } else { $ScreenHeight }
+    if ($outputHeight -gt 0 -and 720 * $Settings.scale -gt $outputHeight) { return '-1' }
+    return '-0.5'
+}
+
+# The primary screen's height in physical pixels, whatever the DPI scaling.
+function Get-SvrScreenHeight {
+    if (!('SvrDisplay' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class SvrDisplay {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DevMode {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Name;
+        public short SpecVersion, DriverVersion, Size, DriverExtra;
+        public int Fields, PositionX, PositionY, Orientation, FixedOutput;
+        public short Color, Duplex, YResolution, TTOption, Collate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
+        public short LogPixels;
+        public int BitsPerPel, PelsWidth, PelsHeight, DisplayFlags, DisplayFrequency;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern bool EnumDisplaySettings(string device, int mode, ref DevMode devMode);
+    public static int Height() {
+        var mode = new DevMode();
+        mode.Size = (short)Marshal.SizeOf(typeof(DevMode));
+        return EnumDisplaySettings(null, -1, ref mode) ? mode.PelsHeight : 0;
+    }
+}
+'@
+    }
+    return [SvrDisplay]::Height()
 }
 
 # The game advances a fixed step per frame, so each frame belongs on an even 60 Hz beat. The

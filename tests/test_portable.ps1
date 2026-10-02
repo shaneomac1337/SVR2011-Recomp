@@ -24,7 +24,8 @@ try {
     $settingsPath = Join-Path $scratch 'settings.json'
     foreach ($case in @(
         @{}, @{ displayMode = 'Windowed'; windowSize = '1920x1080'; scale = 3; controller = 'Xbox'; perfCapture = $true },
-        @{ presentation = 'Mailbox'; scale = 2 }, @{ presentation = 'Fifo'; windowSize = '1600x900' })) {
+        @{ presentation = 'Mailbox'; scale = 2 }, @{ presentation = 'Fifo'; windowSize = '1600x900' },
+        @{ renderer = 'Native'; displayMode = 'Windowed'; windowSize = '1600x900'; scale = 2 })) {
         $settings = New-SvrSettings
         foreach ($key in $case.Keys) { $settings[$key] = $case[$key] }
         Save-SvrSettings $settingsPath $settings
