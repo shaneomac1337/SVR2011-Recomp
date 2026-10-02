@@ -843,7 +843,8 @@ bool UploadConstants(const uint8_t* d3d, uint32_t swapped_texcoords, uint32_t fe
   SharedConstants* shared = &shared_values;
   for (uint32_t slot = 0; slot < kFetchSlots; ++slot) {
     const uint8_t* fetch_data = d3d + kDeviceFetchConstants + slot * 24;
-    if (!(fetch_slots & (1u << slot)) || (LoadBE32(fetch_data) & 3) != 2 ||
+    if (!(fetch_slots & (1u << slot)) ||
+        !IsTextureFetch(LoadBE32(fetch_data), LoadBE32(fetch_data + 4)) ||
         (REXCVAR_GET(svr_native_debug_null_slots) & (1u << slot))) {
       continue;
     }

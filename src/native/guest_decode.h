@@ -195,6 +195,15 @@ constexpr SurfaceSize DecodeSurfaceSize(uint32_t packed) {
   return {(packed >> 18) + 1, ((packed >> 3) & 0x7FFF) + 1};
 }
 
+// --- Texture fetch constants ------------------------------------------------
+
+// Whether a texture fetch constant (dwords 0 and 1) names a texture: type 2, or
+// type 0 with an address, which the game samples in entrance post-processing.
+constexpr bool IsTextureFetch(uint32_t dword0, uint32_t dword1) {
+  const uint32_t type = dword0 & 3;
+  return type == 2 || (type == 0 && (dword1 >> 12) != 0);
+}
+
 // --- Clip space -------------------------------------------------------------
 
 // How a draw's positions reach the target. The converted vertex shaders end

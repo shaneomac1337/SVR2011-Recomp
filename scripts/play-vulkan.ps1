@@ -32,6 +32,8 @@ $run = if ($RunDirectory) { $RunDirectory } else {
     Join-Path $projectRoot ("analysis/vulkan-play-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 }
 New-Item -ItemType Directory -Force $run | Out-Null
+# The game runs in the executable's folder, so a relative log path would land there.
+$run = (Resolve-Path $run).Path
 $info = [System.Diagnostics.ProcessStartInfo]::new()
 $info.FileName = $executable
 $info.WorkingDirectory = Split-Path $executable -Parent

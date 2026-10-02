@@ -706,7 +706,7 @@ Binding Bind(const FetchConstant& raw, VkCommandBuffer upload_cb, uint64_t frame
   t.fetch = Decode(raw);
   const xenos::xe_gpu_texture_fetch_t& fetch = t.fetch;
   Binding binding;
-  if (uint32_t(fetch.type) != 2) {
+  if (!guest::IsTextureFetch(raw.dwords[0], raw.dwords[1])) {
     return binding;
   }
   binding.dimension = uint32_t(fetch.dimension);

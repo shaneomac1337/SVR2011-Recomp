@@ -141,3 +141,15 @@ TEST_CASE("pre-transformed positions land on their pixels") {
   CHECK(px == Catch::Approx(10.5f).margin(1e-4));
   CHECK(py == Catch::Approx(20.5f).margin(1e-4));
 }
+
+TEST_CASE("texture fetch constants the game samples") {
+  // Slot 0 of an entrance bloom pass (type 2).
+  CHECK(IsTextureFetch(0x81404802u, 0x0F1FE086u));
+  // The same texture typed 0 ("invalid texture").
+  CHECK(IsTextureFetch(0x81404800u, 0x0F1FE086u));
+  // An unset slot, and vertex fetch types.
+  CHECK_FALSE(IsTextureFetch(0, 0));
+  CHECK_FALSE(IsTextureFetch(0x81404800u, 0x00000086u));
+  CHECK_FALSE(IsTextureFetch(0x81404801u, 0x0F1FE086u));
+  CHECK_FALSE(IsTextureFetch(0x81404803u, 0x0F1FE086u));
+}
