@@ -38,9 +38,13 @@ REXCVAR_DEFINE_BOOL(svr_native_async_textures, true, "SVR2011",
                     "Native renderer: read and convert textures on worker threads; main-scene "
                     "draws show the previous content (or nothing) for a frame or two instead of "
                     "stalling while new textures load");
+REXCVAR_DEFINE_DOUBLE(svr_native_lod_bias, -0.5, "SVR2011",
+                      "Native renderer: added to the mip level of mipmapped textures; negative "
+                      "values keep distant surfaces sharper at the cost of some shimmer");
 REXCVAR_DEFINE_UINT32(svr_native_dump_texture, 0, "SVR2011",
                       "Native renderer debugging: write the texture at this physical address "
-                      "to native_texture_<address>.dds when it is uploaded");
+                      "(1: every texture) to native_texture_<address>_<size>.dds when it is "
+                      "uploaded");
 
 namespace svr::native::textures {
 
@@ -73,7 +77,8 @@ void DumpDds(uint32_t address, VkFormat format, uint32_t width, uint32_t height,
       return;
   }
   header[27] = 0x1000;
-  const std::string path = fmt::format("native_texture_{:08X}.dds", address);
+  const std::string path =
+      fmt::format("native_texture_{:08X}_{}x{}.dds", address, width, height);
   if (FILE* file = std::fopen(path.c_str(), "wb")) {
     std::fwrite(header, 1, sizeof(header), file);
     std::fwrite(data, 1, size, file);
@@ -393,6 +398,10 @@ uint32_t SamplerIndex(const xenos::xe_gpu_texture_fetch_t& fetch, uint32_t min_l
   // The image holds levels 0..max_level; kBaseMap samples the first only.
   sampler_info.minLod = float(min_level);
   sampler_info.maxLod = uint32_t(fetch.mip_filter) == 2 ? float(min_level) : float(max_level);
+  if (sampler_info.maxLod > sampler_info.minLod) {
+    // Vulkan guarantees |bias| <= 2 on every device.
+    sampler_info.mipLodBias = std::clamp(float(REXCVAR_GET(svr_native_lod_bias)), -2.0f, 2.0f);
+  }
   if (anisotropy > 1.0f) {
     // As in the emulated path, anisotropic filtering is fully linear.
     sampler_info.magFilter = sampler_info.minFilter = VK_FILTER_LINEAR;
@@ -554,8 +563,8 @@ void ReadTexture(TextureJob& job) {
   }
   EndianSwap(job.data.data(), total, fetch.endianness);
   if (const uint32_t dump = REXCVAR_GET(svr_native_dump_texture);
-      dump && dump == t.base_page << 12) {
-    DumpDds(dump, t.info.format, t.width, t.height, job.data.data(),
+      dump == 1 || (dump && dump == t.base_page << 12)) {
+    DumpDds(t.base_page << 12, t.info.format, t.width, t.height, job.data.data(),
             size_t((t.width + block - 1) / block) * ((t.height + block - 1) / block) *
                 bytes_per_block);
   }
