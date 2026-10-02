@@ -1,0 +1,22 @@
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -32,6 +32,7 @@
+ #include <rex/string/numeric.h>
+ #include <rex/system.h>
+ #include <rex/system/achievement_manager.h>
++#include <rex/system/external_frame.h>
+ #include <rex/system/gpu_plugin.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xthread.h>
+@@ -465,7 +466,10 @@
+     }
+ 
+     auto* graphics_system = runtime_->graphics_system();
+-    if (graphics_system && !runtime_->cache_root().empty()) {
++    // The native renderer draws instead of Xenos, so its stored pipelines would only
++    // cost startup time (seconds on a fresh driver cache).
++    if (graphics_system && !runtime_->cache_root().empty() &&
++        !system::external_frame::IsEnabled()) {
+       uint32_t title_id = runtime_->kernel_state()->title_id();
+       if (title_id != 0) {
+         REXLOG_INFO("Initializing shader storage for title {:08X}...", title_id);
